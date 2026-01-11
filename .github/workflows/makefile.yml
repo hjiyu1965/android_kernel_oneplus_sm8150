@@ -1,37 +1,40 @@
-# A simple action usage
-name: Build Kernel
+name: Simple OnePlus 8 Kernel Build
+
 on:
   workflow_dispatch:
 
 jobs:
-  Build-Kernel:
-    strategy:
-      fail-fast: false
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
+    
     steps:
-      - name: Build Kernel
-        uses: dabao1955/kernel_build_action@main
-        with:
-          kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
-          kernel-dir: msm-4.14
-          kernel-branch: lineage-23.0
-          config: vendor/sm8150-perf_defconfig
-          arch: arm64
-          aosp-gcc: true
-          aosp-clang: true
-          # 使用旧版本的 KernelSU 修复兼容性问题
-          ksu: true
-          ksu-version: "11560"  # 使用特定版本而不是 main
-          android-version: 12
-          aosp-clang-version: r416183b  # 使用更合适的 clang 版本
-          disable-lto: true
-          anykernel3: true
-          # 添加额外参数来修复编译错误
-          extra-cmd: |
-            # 修复 atomic_inc_not_zero 错误
-            cd kernel
-            sed -i 's/atomic_inc_not_zero/atomic_long_inc_not_zero/g' include/linux/cred.h
-            sed -i 's/atomic_inc_not_zero/atomic_long_inc_not_zero/g' drivers/misc/mediatek/aee/monitor_hang.c 2>/dev/null || true
+    - name: 安装依赖
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential libncurses5-dev bison flex libssl-dev libelf-dev bc git wget
+        
+    - name: 克隆和准备内核
+      run: |
+        git clone https://github.com/hjiyu1965/android_kernel_oneplus_sm8150 --depth=1 --branch lineage-23.0
+        cd android_kernel_oneplus_sm8150/msm-4.14
+        
+        # 修复 atomic 错误
+        sed -i 's/atomic_inc_not_zero(/atomic_long_inc_not_zero(/g' include/linux/cred.h
+        
+    - name: 构建内核
+      run: |
+        cd android_kernel_oneplus_sm8150/msm-4.14
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        
+        # 配置内核
+        make vendor/sm8150-perf_defconfig
+        
+        # 构建
+        make -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
+        
+    - name: 上传结果
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-build
+        path: android_kernel_oneplus_sm8150/msm-4.14/arch/arm64/boot/Image.gz-dtb
