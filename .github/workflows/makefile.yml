@@ -1,36 +1,21 @@
-name: Build Kernel with Debug
+name: CI
+
 on:
   workflow_dispatch:
 
 jobs:
-  Build-Kernel:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
+  build-kernel:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
     steps:
-      - name: 调试步骤 - 检查克隆结果
-        run: |
-          git clone https://github.com/hjiyu1965/android_kernel_oneplus_sm8150 \
-            --branch lineage-23.0 \
-            --depth=1
-          
-          echo "=== 目录结构 ==="
-          find android_kernel_oneplus_sm8150 -type f -name "Makefile" -o -name "*defconfig*" | head -20
-          
-      - name: Build Kernel (使用正确的参数)
+      - name: Build
         uses: dabao1955/kernel_build_action@main
         with:
           kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
-          kernel-dir: ""  # 让 action 自动检测
           kernel-branch: lineage-23.0
-          config: ""  # 让 action 自动检测
+          config: vendor/sm8150-perf_defconfig
           arch: arm64
           aosp-gcc: true
           aosp-clang: true
-          ksu: true
-          ksu-version: "11303"
           android-version: 12
-          aosp-clang-version: r416183b
-          disable-lto: true
-          anykernel3: true
+          aosp-clang-version: r383902
