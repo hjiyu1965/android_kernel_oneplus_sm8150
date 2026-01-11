@@ -1,18 +1,45 @@
-name: Build OnePlus 8 Kernel Manually
+name: Build OnePlus 8 Kernel with KernelSU
+
 on:
   workflow_dispatch:
+    inputs:
+      ksu_version:
+        description: 'KernelSU Version (推荐: 11303, 0.9.3, 或 11560)'
+        required: true
+        default: '11303'
+        type: string
+      fix_atomic:
+        description: '修复 atomic 错误'
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-    - name: 准备环境
+    - name: 清理 OPAM 警告（可选）
+      run: |
+        # 忽略 OPAM 警告或更新它
+        echo "处理 OPAM 警告..."
+        if command -v opam &> /dev/null; then
+          echo "OPAM 已安装，版本:"
+          opam --version
+          # 可以选择更新或忽略
+          # opam update 2>/dev/null || true
+        else
+          echo "OPAM 未安装"
+        fi
+        
+    - name: 安装构建依赖
       run: |
         sudo apt-get update
+        # 安装内核构建所需依赖
         sudo apt-get install -y \
           build-essential \
           libncurses5-dev \
+          libncursesw5-dev \
           bison \
           flex \
           libssl-dev \
@@ -22,158 +49,309 @@ jobs:
           curl \
           wget \
           zip \
-          python3
-          
+          unzip \
+          python3 \
+          rsync \
+          kmod \
+          cpio \
+          lz4 \
+          lzop \
+          gcc-aarch64-linux-gnu \
+          gcc-4.9-aarch64-linux-gnu
+        
     - name: 克隆内核源码
       run: |
-        git clone https://github.com/hjiyu1965/android_kernel_oneplus_sm8150 --depth=1 --branch lineage-23.0
+        echo "克隆一加8内核源码..."
+        git clone https://github.com/hjiyu1965/android_kernel_oneplus_sm8150.git \
+          --depth=1 \
+          --branch lineage-23.0 \
+          --single-branch
+          
         cd android_kernel_oneplus_sm8150/msm-4.14
         echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
+        echo "当前目录: $(pwd)"
+        ls -la
+        
+    - name: 检查内核版本和配置
+      run: |
+        cd $KERNEL_DIR
+        echo "内核版本信息:"
+        head -20 Makefile
+        echo ""
+        echo "可用的 defconfig 文件:"
+        find . -name "*defconfig*" -type f | grep -i "sm8150\|oneplus\|vendor" | head -10
         
     - name: 下载工具链
       run: |
-        # 创建工具链目录
-        mkdir -p $HOME/toolchains
-        cd $HOME/toolchains
+        mkdir -p /tmp/toolchains
+        cd /tmp/toolchains
         
-        # 下载 AOSP Clang
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.0.0_r35/clang-r416183b.tar.gz
+        echo "下载 AOSP 工具链..."
+        
+        # 下载 AOSP Clang（适用于 Android 12/内核 4.14）
+        wget -q --show-progress https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.0.0_r35/clang-r416183b.tar.gz
         tar -xzf clang-r416183b.tar.gz
         rm clang-r416183b.tar.gz
+        echo "CLANG_DIR=/tmp/toolchains" >> $GITHUB_ENV
         
-        # 下载 AOSP GCC
-        wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.0.0_r35.tar.gz
-        tar -xzf android-12.0.0_r35.tar.gz
+        # 下载 AOSP GCC 4.9
+        wget -q --show-progress https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.0.0_r35.tar.gz
+        mkdir -p gcc-4.9
+        tar -xzf android-12.0.0_r35.tar.gz -C gcc-4.9
         rm android-12.0.0_r35.tar.gz
+        echo "GCC_DIR=/tmp/toolchains/gcc-4.9" >> $GITHUB_ENV
         
-        echo "CLANG_PATH=$HOME/toolchains/bin" >> $GITHUB_ENV
-        echo "GCC_PATH=$HOME/toolchains/bin" >> $GITHUB_ENV
-        
-    - name: 应用和修复 KernelSU
+    - name: 应用 KernelSU
       run: |
         cd $KERNEL_DIR
         
-        # 使用较旧的 KernelSU 版本
-        KSU_VERSION="11303"  # 这个版本可能更兼容 4.14
+        KSU_VERSION="${{ github.event.inputs.ksu_version }}"
+        echo "使用 KernelSU 版本: $KSU_VERSION"
         
-        # 下载 KernelSU
-        echo "下载 KernelSU 版本 $KSU_VERSION..."
-        wget -O ksu.tar.gz https://github.com/tiann/KernelSU/archive/refs/tags/v0.9.3.tar.gz
-        tar -xzf ksu.tar.gz
+        # 方法1: 使用 setup.sh 脚本（可能失败）
+        echo "尝试使用 setup.sh 脚本..."
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/$KSU_VERSION/kernel/setup.sh" | \
+          bash -s -- -s $KSU_VERSION 2>&1 | tee ksu_apply.log || true
         
-        # 手动应用 KernelSU
-        cp -r KernelSU-0.9.3/kernel/* .
-        
-        # 修复 atomic 错误
-        echo "修复编译错误..."
-        
-        # 修复 include/linux/cred.h
-        if grep -q "atomic_inc_not_zero" include/linux/cred.h; then
-          sed -i 's/atomic_inc_not_zero/atomic_long_inc_not_zero/g' include/linux/cred.h
+        # 如果失败，尝试方法2: 手动复制
+        if [ ! -d "KernelSU" ]; then
+          echo "setup.sh 失败，尝试手动方法..."
+          
+          # 下载 KernelSU 源码
+          if [[ "$KSU_VERSION" =~ ^[0-9]+$ ]]; then
+            # 如果是数字版本
+            wget -q --show-progress "https://github.com/tiann/KernelSU/archive/refs/heads/main.tar.gz" -O ksu.tar.gz
+          else
+            # 如果是标签版本
+            wget -q --show-progress "https://github.com/tiann/KernelSU/archive/refs/tags/v$KSU_VERSION.tar.gz" -O ksu.tar.gz
+          fi
+          
+          tar -xzf ksu.tar.gz
+          rm ksu.tar.gz
+          
+          # 复制文件
+          KSU_DIR=$(find . -name "KernelSU-*" -type d | head -1)
+          if [ -d "$KSU_DIR/kernel" ]; then
+            cp -r $KSU_DIR/kernel/* .
+          fi
         fi
         
-        # 如果 atomic_long_inc_not_zero 未定义，创建它
+        echo "KernelSU 应用完成"
+        
+    - name: 修复 atomic 编译错误
+      if: ${{ github.event.inputs.fix_atomic }}
+      run: |
+        cd $KERNEL_DIR
+        
+        echo "修复 atomic_inc_not_zero 错误..."
+        
+        # 备份原始文件
+        cp include/linux/cred.h include/linux/cred.h.backup
+        
+        # 修复1: 替换 atomic_inc_not_zero 为 atomic_long_inc_not_zero
+        sed -i 's/atomic_inc_not_zero(/atomic_long_inc_not_zero(/g' include/linux/cred.h
+        
+        # 修复2: 检查是否需要添加兼容性定义
         if ! grep -q "atomic_long_inc_not_zero" include/linux/atomic.h; then
+          echo "添加 atomic_long_inc_not_zero 兼容性定义..."
+          
+          # 在 atomic.h 文件的合适位置添加定义
           cat >> include/linux/atomic.h << 'EOF'
 
-/* KernelSU 修复 - 4.14 内核兼容性 */
+/* KernelSU 兼容性修复 - 针对内核 4.14 */
 #ifndef atomic_long_inc_not_zero
-#define atomic_long_inc_not_zero(v) atomic_inc_not_zero(v)
+#define atomic_long_inc_not_zero(v) atomic_inc_not_zero((atomic_t *)(v))
 #endif
 EOF
         fi
         
-        # 确保 KSU 配置已设置
-        if [ -f ".config" ]; then
-          echo "CONFIG_KSU=y" >> .config
-        fi
+        # 修复3: 检查其他可能使用 atomic_inc_not_zero 的地方
+        echo "搜索其他可能出错的 atomic_inc_not_zero 使用..."
+        find . -name "*.c" -type f -exec grep -l "atomic_inc_not_zero" {} \; | head -5
         
     - name: 配置内核
       run: |
         cd $KERNEL_DIR
         
+        # 设置环境变量
         export ARCH=arm64
-        export CROSS_COMPILE=$HOME/toolchains/aarch64-linux-android-
+        export SUBARCH=arm64
+        export CROSS_COMPILE=$GCC_DIR/bin/aarch64-linux-android-
+        export PATH=$CLANG_DIR/bin:$PATH
+        export CC=clang
         export CLANG_TRIPLE=aarch64-linux-gnu-
+        
+        echo "使用配置: vendor/sm8150-perf_defconfig"
+        
+        # 清理并配置
+        make clean 2>/dev/null || true
+        make mrproper 2>/dev/null || true
         
         # 使用 defconfig
         make vendor/sm8150-perf_defconfig
         
-        # 确保配置正确
-        echo "CONFIG_KSU=y" >> .config
+        # 启用 KernelSU
+        if ! grep -q "CONFIG_KSU=y" .config; then
+          echo "CONFIG_KSU=y" >> .config
+        fi
+        
+        # 禁用模块签名（可选）
         echo "CONFIG_MODULE_SIG=n" >> .config
+        
+        # 显示配置摘要
+        echo "配置摘要:"
+        grep -E "KSU|MODULE_SIG" .config || true
         
     - name: 构建内核
       run: |
         cd $KERNEL_DIR
         
+        # 设置环境变量
         export ARCH=arm64
-        export CROSS_COMPILE=$HOME/toolchains/aarch64-linux-android-
+        export SUBARCH=arm64
+        export CROSS_COMPILE=$GCC_DIR/bin/aarch64-linux-android-
+        export PATH=$CLANG_DIR/bin:$PATH
+        export CC=clang
         export CLANG_TRIPLE=aarch64-linux-gnu-
-        export CC=$HOME/toolchains/clang
-        export LD=ld.lld
         
-        # 禁用导致错误的警告
-        export KCFLAGS="-Wno-error=incompatible-pointer-types -Wno-error=pointer-sign -Wno-error=implicit-function-declaration"
+        # 设置编译标志，禁用特定警告
+        export KCFLAGS="-Wno-error=incompatible-pointer-types \
+                       -Wno-error=pointer-sign \
+                       -Wno-error=implicit-function-declaration \
+                       -Wno-error=incompatible-function-pointer-types"
+        
+        # 显示编译器信息
+        echo "编译器信息:"
+        $CC --version
+        $CROSS_COMPILE-gcc --version
         
         echo "开始构建内核..."
-        make -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
         
-        # 检查是否成功
+        # 使用更详细的构建命令
+        make -j$(nproc) \
+          CC="$CC" \
+          LD=ld.lld \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip \
+          Image.gz-dtb 2>&1 | tee build_full.log
+        
+        # 检查构建结果
         if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
           echo "✅ 内核构建成功！"
+          echo "构建产物:"
+          ls -lh arch/arm64/boot/Image.gz-dtb
+          
+          # 计算文件大小
+          SIZE=$(stat -c%s "arch/arm64/boot/Image.gz-dtb")
+          echo "内核大小: $((SIZE / 1024 / 1024)) MB"
         else
           echo "❌ 内核构建失败！"
-          tail -100 build.log
+          echo "最后100行日志:"
+          tail -100 build_full.log
+          
+          # 尝试查找错误
+          echo "错误摘要:"
+          grep -i "error:" build_full.log | head -20
+          echo ""
+          echo "警告摘要:"
+          grep -i "warning:" build_full.log | head -20
+          
           exit 1
         fi
         
-    - name: 创建 AnyKernel3 刷机包
+    - name: 创建刷机包
       run: |
+        echo "创建 AnyKernel3 刷机包..."
+        
         # 克隆 AnyKernel3
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
         
-        # 复制内核镜像
-        cp $KERNEL_DIR/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-        
-        # 更新 AnyKernel3 脚本
+        # 进入目录
         cd AnyKernel3
-        cat > update-binary << 'EOF'
+        
+        # 复制内核镜像
+        cp $KERNEL_DIR/arch/arm64/boot/Image.gz-dtb .
+        
+        # 创建配置文件
+        cat > anykernel.sh << 'EOF'
 #!/sbin/sh
-# AnyKernel3安装脚本
 
-OUTFD=$2
-UI=$(basename $0)
+## AnyKernel3 setup
+# begin properties
+properties() { '
+kernel.string=OnePlus 8 Kernel with KernelSU
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=instantnoodlep
+device.name2=instantnoodle
+device.name3=OnePlus8
+device.name4=OnePlus 8
+supported.versions=11 - 14
+'; } # end properties
 
-ui_print() { echo -e "ui_print $1\nui_print" > /proc/self/fd/$OUTFD; }
+## AnyKernel3 install
+# begin attributes
+attributes() {
+set_perm_recursive 0 0 0755 0644 "$MODPATH";
+} # end attributes
 
-ui_print "正在安装 OnePlus 8 Kernel with KernelSU..."
+# shell variables
+block=/dev/block/bootdevice/by-name/boot;
+is_slot_device=0;
+ramdisk_compression=auto;
 
-# 挂载分区
-mount /system 2>/dev/null
-mount /vendor 2>/dev/null
-mount -o rw,remount /system 2>/dev/null
-mount -o rw,remount /vendor 2>/dev/null
+## AnyKernel3 methods (DO NOT CHANGE)
+# import patching functions/variables - see for reference
+. tools/ak3-core.sh;
 
-# 备份原boot分区
-dd if=/dev/block/bootdevice/by-name/boot of=/tmp/boot-backup.img
+## Select the correct image to flash
+if [ -f $home/Image.gz-dtb ]; then
+  dump_boot;
+  write_boot;
+else
+  abort "No kernel image found!";
+fi;
 
-# 写入新内核
-dd if=/tmp/anykernel/Image.gz-dtb of=/dev/block/bootdevice/by-name/boot
-
-ui_print "安装完成！重启生效。"
+## End install
 EOF
         
-        chmod 755 update-binary
+        # 设置权限
+        chmod 755 anykernel.sh
         
         # 创建刷机包
-        zip -r9 ../OnePlus8-Kernel-KSU.zip * -x .git README.md *placeholder
+        ZIP_NAME="OnePlus8-KernelSU-${{ github.event.inputs.ksu_version }}-$(date +%Y%m%d-%H%M).zip"
+        zip -r9 ../$ZIP_NAME * -x .git README.md .gitignore
         
-    - name: 上传制品
+        echo "刷机包创建完成: $ZIP_NAME"
+        echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+        
+    - name: 上传构建产物
       uses: actions/upload-artifact@v4
       with:
-        name: OnePlus8-Kernel
+        name: OnePlus8-Kernel-Build
         path: |
           ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz-dtb
-          OnePlus8-Kernel-KSU.zip
-          ${{ env.KERNEL_DIR }}/build.log
+          ${{ env.ZIP_NAME }}
+          ${{ env.KERNEL_DIR }}/build_full.log
+        retention-days: 7
+        
+    - name: 显示构建摘要
+      if: always()
+      run: |
+        echo "=== 构建摘要 ==="
+        echo "内核目录: $KERNEL_DIR"
+        echo "KernelSU 版本: ${{ github.event.inputs.ksu_version }}"
+        echo "修复 atomic 错误: ${{ github.event.inputs.fix_atomic }}"
+        
+        if [ -f "$KERNEL_DIR/arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "状态: ✅ 构建成功"
+          echo "刷机包: $ZIP_NAME"
+        else
+          echo "状态: ❌ 构建失败"
+        fi
