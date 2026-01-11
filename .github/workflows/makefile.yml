@@ -16,15 +16,22 @@ jobs:
         uses: dabao1955/kernel_build_action@main
         with:
           kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
-          kernel-dir: msm-4.9
+          kernel-dir: msm-4.14
           kernel-branch: lineage-23.0
           config: vendor/sm8150-perf_defconfig
           arch: arm64
           aosp-gcc: true
           aosp-clang: true
+          # 使用旧版本的 KernelSU 修复兼容性问题
           ksu: true
-          ksu-version: main
+          ksu-version: "11560"  # 使用特定版本而不是 main
           android-version: 12
-          aosp-clang-version: r383902
+          aosp-clang-version: r416183b  # 使用更合适的 clang 版本
           disable-lto: true
           anykernel3: true
+          # 添加额外参数来修复编译错误
+          extra-cmd: |
+            # 修复 atomic_inc_not_zero 错误
+            cd kernel
+            sed -i 's/atomic_inc_not_zero/atomic_long_inc_not_zero/g' include/linux/cred.h
+            sed -i 's/atomic_inc_not_zero/atomic_long_inc_not_zero/g' drivers/misc/mediatek/aee/monitor_hang.c 2>/dev/null || true
