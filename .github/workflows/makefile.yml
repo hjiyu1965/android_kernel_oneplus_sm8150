@@ -16,14 +16,14 @@ jobs:
         uses: dabao1955/kernel_build_action@main
         with:
           kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
-          kernel-dir: msm-4.19
-          kernel-branch: taffy
-          config: sm8150_perf_defconfig
+          kernel-dir: msm-4.14
+          kernel-branch: lineage-23.0
+          config: vendor/sm8150-perf_defconfig
           arch: arm64
           aosp-gcc: true
           aosp-clang: true
           ksu: true
-          ksu-version: lineage-23.0
+          ksu-version: main
           android-version: 12
           aosp-clang-version: r383902
           disable-lto: true
