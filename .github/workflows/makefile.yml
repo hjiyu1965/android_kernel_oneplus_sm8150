@@ -1,22 +1,30 @@
-name: CI
-
+# A simple action usage
+name: Build Kernel
 on:
   workflow_dispatch:
 
 jobs:
-  build-kernel:
-    name: Build Kernel
-    runs-on: ubuntu-20.04
+  Build-Kernel:
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
-      - name: Build
+      - name: Build Kernel
         uses: dabao1955/kernel_build_action@main
         with:
           kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
+          kernel-dir: msm-4.19
           kernel-branch: lineage-23.0
           config: vendor/sm8150-perf_defconfig
           arch: arm64
           aosp-gcc: true
           aosp-clang: true
-          python-2.7: true
+          ksu: true
+          ksu-version: v0.9.5
           android-version: 12
           aosp-clang-version: r383902
+          disable-lto: true
+          anykernel3: true
