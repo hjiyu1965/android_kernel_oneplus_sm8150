@@ -18,7 +18,7 @@ jobs:
           kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
           kernel-dir: msm-4.14
           kernel-branch: lineage-23.0
-          config: lineage-23.0
+          config: vendor/sm8150-perf_defconfig
           arch: arm64
           aosp-gcc: true
           aosp-clang: true
