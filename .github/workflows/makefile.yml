@@ -1,78 +1,30 @@
-name: OnePlus 8 Kernel Build with KernelSU
-
+# A simple action usage
+name: Build Kernel
 on:
   workflow_dispatch:
-    inputs:
-      kernelsu_variant:
-        description: 'KernelSU Variant'
-        required: true
-        default: 'Official'
-        type: choice
-        options:
-        - Official
-        - Next
-        - MKSU
-        - SukiSU
-      use_susfs:
-        description: 'Enable SUSFS'
-        required: true
-        type: boolean
-        default: true
 
 jobs:
-  build:
+  Build-Kernel:
+    strategy:
+      fail-fast: false
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: read
+
     steps:
-    - name: 克隆一加8内核源码
-      run: |
-        git clone https://github.com/hjiyu1965/android_kernel_oneplus_sm8150-blineage-23.0 --depth=1
-        mv android_kernel_oneplus_sm8150-blineage-23.0 kernel
-        
-    - name: 安装依赖和工具链
-      run: |
-        sudo apt update
-        sudo apt install -y gcc-aarch64-linux-gnu build-essential libncurses-dev
-        
-    - name: 添加 KernelSU
-      run: |
-        cd kernel
-        BRANCH="-s main"  # 或根据选择调整
-        
-        case "${{ github.event.inputs.kernelsu_variant }}" in
-          "Official")
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash $BRANCH
-            ;;
-          "Next")
-            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash $BRANCH
-            ;;
-          "MKSU")
-            curl -LSs "https://raw.githubusercontent.com/5ec1cff/KernelSU/main/kernel/setup.sh" | bash $BRANCH
-            ;;
-          "SukiSU")
-            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash $BRANCH
-            ;;
-        esac
-        
-    - name: 配置内核
-      run: |
-        cd kernel
-        export ARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        # 使用设备特定的defconfig，需要确认正确的配置文件名
-        make vendor/sm8150-perf_defconfig || make oneplus_sm8150_defconfig
-        
-    - name: 构建内核
-      run: |
-        cd kernel
-        export ARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        make -j$(nproc) Image.gz-dtb
-        
-    - name: 上传制品
-      uses: actions/upload-artifact@v4
-      with:
-        name: oneplus8-kernel
-        path: |
-          kernel/arch/arm64/boot/Image.gz-dtb
-          kernel/out/arch/arm64/boot/Image.gz-dtb
+      - name: Build Kernel
+        uses: dabao1955/kernel_build_action@main
+        with:
+          kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
+          kernel-dir: msm-4.19
+          kernel-branch: taffy
+          config: sm8150_perf_defconfig
+          arch: arm64
+          aosp-gcc: true
+          aosp-clang: true
+          ksu: true
+          ksu-version: lineage-23.0
+          android-version: 12
+          aosp-clang-version: r383902
+          disable-lto: true
+          anykernel3: true
