@@ -21,7 +21,7 @@ jobs:
           config: vendor/sm8150-perf_defconfig
           arch: arm64
           aosp-gcc: true
-          aosp-clang: true
+          aosp-clang: false
           ksu: true
           ksu-version: v0.9.5
           ksu-lkm: true
