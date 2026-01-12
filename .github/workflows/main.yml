@@ -1,43 +1,22 @@
 name: CI
-on:
-  push:
-    branches: main
-    paths:
-      - '.github/workflows/main.yml'
-      - 'action.yml'
 
-  pull_request:
+on:
   workflow_dispatch:
 
 jobs:
-  ci-test:
+  build-kernel:
     name: Build Kernel
-    strategy:
-      fail-fast: false
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+    runs-on: ubuntu-20.04
     steps:
-    - name: Checkout
-      uses: actions/checkout@v6
-      with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
-
-    - name: Build Kernel
-      uses: ./
-      with:
+      - name: Build
+        uses: dabao1955/kernel_build_action@main
+        with:
           kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
-          kernel-dir: msm-4.14.190
-          kernel-branch: lineage-23.0
-          config: vendor/sm8150-perf+_defconfig
+          kernel-branch: lineage-23.0 
+          config: vendor/sm8150-perf_defconfig
           arch: arm64
           aosp-gcc: true
           aosp-clang: true
-          ksu: true
-          ksu-version: v0.9.5
+          python-2.7: true
           android-version: 11
           aosp-clang-version: r383902
-          disable-lto: true
-          anykernel3: true
