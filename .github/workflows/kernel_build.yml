@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Build Kernel
-        uses: dabao1955/kernel_build_action@v1  # or a specific commit
+        uses: dabao1955/kernel_build_action@main  # 改回 main 分支
         with:
           kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
           kernel-dir: msm-4.9
@@ -25,4 +25,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OnePlus-SM8150-Kernel
-          path: output/*.zip
+          path: output/*.zip   # 根据 Action 的实际输出路径调整
