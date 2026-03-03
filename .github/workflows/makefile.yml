@@ -25,6 +25,10 @@ on:
           - defconfig           # 强制使用架构默认配置
           - system              # 强制使用当前系统配置（不存在则报错）
           - custom_url          # 从指定 URL 下载 .config 文件
+      config_url:
+        description: '自定义配置文件的 URL（仅当配置来源为 custom_url 时需要）'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -47,7 +51,6 @@ jobs:
             kernel-wedge \
             python3 \
             wget
-          # 以上为内核编译及打包所需的所有工具
 
       - name: 安装交叉编译工具（按需）
         run: |
@@ -120,9 +123,12 @@ jobs:
               echo "强制使用当前系统配置"
               ;;
             custom_url)
-              read -p "请输入配置文件的 URL: " CONFIG_URL
-              wget -O .config "$CONFIG_URL"
-              echo "已从 $CONFIG_URL 下载配置文件"
+              if [ -z "${{ inputs.config_url }}" ]; then
+                echo "错误：配置来源为 custom_url，但未提供 config_url 输入" >&2
+                exit 1
+              fi
+              wget -O .config "${{ inputs.config_url }}"
+              echo "已从 ${{ inputs.config_url }} 下载配置文件"
               ;;
           esac
 
