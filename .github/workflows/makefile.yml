@@ -15,6 +15,16 @@ on:
         options:
           - x86_64
           - arm64
+      config_source:
+        description: '内核配置来源'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto                # 优先使用系统配置，否则 defconfig
+          - defconfig           # 强制使用架构默认配置
+          - system              # 强制使用当前系统配置（不存在则报错）
+          - custom_url          # 从指定 URL 下载 .config 文件
 
 jobs:
   build:
@@ -35,8 +45,9 @@ jobs:
             debhelper \
             rsync \
             kernel-wedge \
-            python3
-          # 注释单独一行，避免影响命令
+            python3 \
+            wget
+          # 以上为内核编译及打包所需的所有工具
 
       - name: 安装交叉编译工具（按需）
         run: |
@@ -74,22 +85,48 @@ jobs:
         run: |
           tar -xf linux-${{ steps.kernel.outputs.KERNEL_VER }}.tar.xz
 
-      - name: 配置内核
+      - name: 配置内核（根据用户选择）
         run: |
           cd linux-${{ steps.kernel.outputs.KERNEL_VER }}
+          # 设置架构相关变量
           if [ "${{ inputs.arch }}" = "arm64" ]; then
             export ARCH=arm64
             export CROSS_COMPILE=aarch64-linux-gnu-
           else
             export ARCH=x86_64
           fi
-          if [ -f /boot/config-$(uname -r) ]; then
-            cp /boot/config-$(uname -r) .config
-            echo "使用当前系统配置作为基础"
-          else
-            make defconfig
-            echo "使用默认 defconfig"
-          fi
+
+          CONFIG_SOURCE="${{ inputs.config_source }}"
+          case "$CONFIG_SOURCE" in
+            auto)
+              if [ -f /boot/config-$(uname -r) ]; then
+                cp /boot/config-$(uname -r) .config
+                echo "使用当前系统配置作为基础"
+              else
+                make defconfig
+                echo "使用默认 defconfig（未找到系统配置）"
+              fi
+              ;;
+            defconfig)
+              make defconfig
+              echo "强制使用默认 defconfig"
+              ;;
+            system)
+              if [ ! -f /boot/config-$(uname -r) ]; then
+                echo "错误：未找到当前系统配置文件 /boot/config-$(uname -r)" >&2
+                exit 1
+              fi
+              cp /boot/config-$(uname -r) .config
+              echo "强制使用当前系统配置"
+              ;;
+            custom_url)
+              read -p "请输入配置文件的 URL: " CONFIG_URL
+              wget -O .config "$CONFIG_URL"
+              echo "已从 $CONFIG_URL 下载配置文件"
+              ;;
+          esac
+
+          # 更新旧配置，将新选项设为默认值
           make olddefconfig
 
       - name: 编译内核及生成 deb 包
