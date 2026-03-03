@@ -1,0 +1,179 @@
+name: 安卓内核编译
+# 触发规则：push到指定分支、PR、手动触发
+on:
+  push:
+    branches: [ main, master, lineage-* ] # 改成你的内核源码分支
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # 支持GitHub页面手动触发编译
+    inputs:
+      build_type:
+        description: 编译类型
+        type: choice
+        default: release
+        options: [ release, debug ]
+      enable_ccache:
+        description: 开启ccache加速
+        type: boolean
+        default: true
+
+# 全局可配置参数（核心修改区，无需改动步骤代码）
+env:
+  # 基础编译配置
+  ARCH: arm64                          # 内核架构，安卓手机固定arm64，32位设备改arm
+  DEFCONFIG: vendor/mydevice_defconfig # 改成你的设备内核配置文件（arch/arm64/configs/下的文件名）
+  OUTPUT_DIR: out                      # 编译输出目录
+  JOBS: $(nproc)                       # 并行编译线程数，自动匹配Runner核心数
+
+  # 工具链配置（二选一，默认Clang，安卓官方推荐）
+  TOOLCHAIN: clang                     # 可选：clang / gcc
+  # Clang配置（AOSP官方预编译工具链）
+  LLVM_VERSION: 18                     # LLVM版本，可根据内核兼容性调整
+  LLVM_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r${{ env.LLVM_VERSION }}dev.tar.gz
+  # GCC配置（Linaro工具链，适配老内核）
+  GCC_VERSION: 7.5.0
+  GCC_URL: https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-${{ env.GCC_VERSION }}-x86_64_aarch64-linux-gnu.tar.xz
+  CROSS_COMPILE: aarch64-linux-gnu-    # 交叉编译前缀
+
+  # AnyKernel3 刷入包配置（自动打包成Recovery可刷入的zip）
+  ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git # 改成你的设备适配的AnyKernel3仓库
+  ANYKERNEL_BRANCH: master
+  ZIP_NAME: MyDevice-Kernel-${{ github.sha }}.zip # 输出包名
+
+# 编译任务
+jobs:
+  build-kernel:
+    name: 内核编译
+    runs-on: ubuntu-latest # 基于Ubuntu最新LTS环境，兼容性最佳
+    permissions:
+      contents: read
+    steps:
+      # 步骤1：检出内核源码（含子模块）
+      - name: 检出内核源码
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive # 自动拉取子模块，有依赖必须开启
+          fetch-depth: 1        # 浅克隆，加速检出
+
+      # 步骤2：安装系统编译依赖
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            build-essential git bc bison flex libssl-dev libncurses5-dev \
+            zip curl wget ccache python3 python3-pip device-tree-compiler \
+            libelf-dev lz4 zstd
+
+      # 步骤3：配置ccache编译缓存（大幅提升二次编译速度）
+      - name: 配置ccache缓存
+        if: ${{ inputs.enable_ccache != false }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: kernel-ccache-${{ env.ARCH }}-${{ env.DEFCONFIG }}-${{ github.sha }}
+          restore-keys: |
+            kernel-ccache-${{ env.ARCH }}-${{ env.DEFCONFIG }}-
+          max-size: 2G
+
+      # 步骤4：下载并配置编译工具链
+      - name: 配置Clang工具链
+        if: ${{ env.TOOLCHAIN == 'clang' }}
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain/llvm
+          wget -O llvm.tar.gz ${{ env.LLVM_URL }}
+          tar -xzf llvm.tar.gz -C toolchain/llvm
+          echo "$(pwd)/toolchain/llvm/bin" >> $GITHUB_PATH
+          # 验证工具链
+          clang --version
+
+      - name: 配置GCC工具链
+        if: ${{ env.TOOLCHAIN == 'gcc' }}
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain/gcc
+          wget -O gcc.tar.xz ${{ env.GCC_URL }}
+          tar -xJf gcc.tar.xz -C toolchain/gcc --strip-components=1
+          echo "$(pwd)/toolchain/gcc/bin" >> $GITHUB_PATH
+          # 验证工具链
+          ${{ env.CROSS_COMPILE }}gcc --version
+
+      # 步骤5：配置内核（生成.config）
+      - name: 配置内核
+        run: |
+          set -euo pipefail
+          make O=${{ env.OUTPUT_DIR }} ARCH=${{ env.ARCH }} ${{ env.DEFCONFIG }}
+          # 可选：debug模式开启调试配置
+          if [[ "${{ inputs.build_type }}" == "debug" ]]; then
+            ./scripts/config --file ${{ env.OUTPUT_DIR }}/.config --enable DEBUG_INFO
+            ./scripts/config --file ${{ env.OUTPUT_DIR }}/.config --enable DEBUG_FS
+          fi
+
+      # 步骤6：编译内核
+      - name: 编译内核（Clang）
+        if: ${{ env.TOOLCHAIN == 'clang' }}
+        run: |
+          set -euo pipefail
+          export CCACHE_DIR=~/.ccache
+          make O=${{ env.OUTPUT_DIR }} \
+            ARCH=${{ env.ARCH }} \
+            LLVM=1 \
+            CC="ccache clang" \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            -j${{ env.JOBS }}
+
+      - name: 编译内核（GCC）
+        if: ${{ env.TOOLCHAIN == 'gcc' }}
+        run: |
+          set -euo pipefail
+          export CCACHE_DIR=~/.ccache
+          make O=${{ env.OUTPUT_DIR }} \
+            ARCH=${{ env.ARCH }} \
+            CC="ccache ${{ env.CROSS_COMPILE }}gcc" \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            -j${{ env.JOBS }}
+
+      # 步骤7：打包AnyKernel3刷入包
+      - name: 打包Recovery刷入包
+        run: |
+          set -euo pipefail
+          # 克隆AnyKernel3
+          git clone --depth=1 -b ${{ env.ANYKERNEL_BRANCH }} ${{ env.ANYKERNEL_REPO }} anykernel3
+          
+          # 复制编译好的内核镜像（根据你的设备实际路径调整）
+          # 常见镜像路径：Image.gz-dtb、Image、bzImage等
+          cp ${{ env.OUTPUT_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb anykernel3/
+          # 可选：复制设备树dtb/dtbo
+          cp -r ${{ env.OUTPUT_DIR }}/arch/${{ env.ARCH }}/boot/dts/* anykernel3/dtb/ 2>/dev/null || true
+          # 可选：复制内核模块
+          make O=${{ env.OUTPUT_DIR }} ARCH=${{ env.ARCH }} modules_install INSTALL_MOD_PATH=./modules
+          cp -r ./modules/lib/modules/* anykernel3/modules/ 2>/dev/null || true
+          
+          # 打包zip
+          cd anykernel3
+          zip -r9 ../${{ env.ZIP_NAME }} * -x .git README.md
+          cd ..
+
+      # 步骤8：上传编译产物（可在GitHub Action页面下载）
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 30 # 产物保留天数，默认30天
+
+      # 可选：步骤9 发布Release（仅push tag时触发）
+      - name: 发布到GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_NAME }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
