@@ -20,7 +20,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 安装基础依赖
+      - name: 安装基础依赖（含 debhelper）
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -31,20 +31,21 @@ jobs:
             libssl-dev \
             libelf-dev \
             bc \
-            jq                           # 用于解析 kernel.org JSON
+            jq \
+            debhelper \          # 关键：添加 debhelper 以支持 bindeb-pkg
+            rsync                 # 内核打包有时需要 rsync
 
       - name: 安装交叉编译工具（按需）
         run: |
           if [ "${{ inputs.arch }}" = "arm64" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu
           fi
-          # 可扩展其他架构，如 arm: gcc-arm-linux-gnueabihf
+          # 可扩展其他架构
 
       - name: 获取内核版本
         id: kernel
         run: |
           if [ -z "${{ inputs.kernel_version }}" ]; then
-            # 从 kernel.org JSON API 获取最新稳定版
             LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker=="stable") | .version')
             echo "KERNEL_VER=${LATEST}" >> $GITHUB_OUTPUT
             echo "自动获取最新稳定版: ${LATEST}"
@@ -64,7 +65,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           KVER=${{ steps.kernel.outputs.KERNEL_VER }}
-          MAJOR=${KVER%%.*}                     # 主版本号（如 6.x）
+          MAJOR=${KVER%%.*}
           wget https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${KVER}.tar.xz
 
       - name: 解压内核源码
@@ -74,15 +75,12 @@ jobs:
       - name: 配置内核
         run: |
           cd linux-${{ steps.kernel.outputs.KERNEL_VER }}
-          # 根据架构设置环境变量
           if [ "${{ inputs.arch }}" = "arm64" ]; then
             export ARCH=arm64
             export CROSS_COMPILE=aarch64-linux-gnu-
           else
             export ARCH=x86_64
-            # x86_64 无需 CROSS_COMPILE
           fi
-          # 优先使用当前运行环境的配置，否则使用默认配置
           if [ -f /boot/config-$(uname -r) ]; then
             cp /boot/config-$(uname -r) .config
             echo "使用当前系统配置作为基础"
@@ -90,13 +88,11 @@ jobs:
             make defconfig
             echo "使用默认 defconfig"
           fi
-          # 将新选项设为默认值（适用于旧配置升级）
           make olddefconfig
 
       - name: 编译内核及生成 deb 包
         run: |
           cd linux-${{ steps.kernel.outputs.KERNEL_VER }}
-          # 设置交叉编译环境变量（再次确保）
           if [ "${{ inputs.arch }}" = "arm64" ]; then
             export ARCH=arm64
             export CROSS_COMPILE=aarch64-linux-gnu-
