@@ -1,13 +1,12 @@
 name: Build Kernel
-on:
-  workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
   Build-Kernel:
     runs-on: ubuntu-latest
     steps:
       - name: Build Kernel
-        uses: dabao1955/kernel_build_action@main  # 改回 main 分支
+        uses: dabao1955/kernel_build_action@main
         with:
           kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
           kernel-dir: msm-4.9
@@ -17,12 +16,5 @@ jobs:
           aosp-gcc: true
           aosp-clang: true
           android-version: 11
-          aosp-clang-version: r383902
           disable-lto: true
           anykernel3: true
-
-      - name: Upload Kernel Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OnePlus-SM8150-Kernel
-          path: output/*.zip   # 根据 Action 的实际输出路径调整
