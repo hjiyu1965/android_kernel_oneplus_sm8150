@@ -1,60 +1,117 @@
-	name: Build Linux Kernel
-	on:
-	  workflow_dispatch:
-	    inputs:
-	      kernel_version:
-	        description: '指定内核版本(留空则自动获取最新稳定版)'
-	        required: false
-	        default: ''
-	      arch:
-	        description: '编译架构'
-	        required: true
-	        default: 'x86_64'
-	        type: choice
-	        options:
-	          - x86_64
-	          - arm64
-	jobs:
-	  build:
-	    runs-on: ubuntu-latest
-	    steps:
-	    - name: 安装编译依赖
-	      run: |
-	        sudo apt-get update
-	        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc
-	    - name: 获取内核源码
-	      id: get_kernel
-	      run: |
-	        if [ -z "${{ inputs.kernel_version }}" ]; then
-	          # 自动获取最新稳定版内核
-	          KERNEL_VER=$(curl -s https://www.kernel.org/ | grep -A1 'latest_link' | grep -oP 'linux-\K([0-9]+\.[0-9]+\.[0-9]+)' | head -1)
-	          echo "KERNEL_VER=${KERNEL_VER}" >> $GITHUB_OUTPUT
-	          echo "正在下载最新内核版本: ${KERNEL_VER}"
-	        else
-	          KERNEL_VER="${{ inputs.kernel_version }}"
-	          echo "KERNEL_VER=${KERNEL_VER}" >> $GITHUB_OUTPUT
-	          echo "使用指定版本: ${KERNEL_VER}"
-	        fi
-	        wget https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_VER%%.*}.x/linux-${KERNEL_VER}.tar.xz
-	        tar -xvf linux-${KERNEL_VER}.tar.xz
-	    - name: 配置内核
-	      run: |
-	        cd linux-${{ steps.get_kernel.outputs.KERNEL_VER }}
-	        # 使用当前系统的配置作为基础,确保硬件兼容性
-	        cp /boot/config-$(uname -r) .config 2>/dev/null || make defconfig
-	        # 自动设置新选项为默认值
-	        make olddefconfig
-	    - name: 并行编译内核
-	      run: |
-	        cd linux-${{ steps.get_kernel.outputs.KERNEL_VER }}
-	        # 使用所有可用核心进行编译
-	        make -j$(nproc) bindeb-pkg
-	        # 编译完成后移动构建产物以便上传
-	        mkdir -p artifacts
-	        mv ../*.deb artifacts/
-	    - name: 上传构建产物
-	      uses: actions/upload-artifact@v4
-	      with:
-	        name: kernel-debs-${{ steps.get_kernel.outputs.KERNEL_VER }}
-	        path: artifacts/*.deb
-	        retention-days: 7
+name: Build Linux Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: '指定内核版本（留空则自动获取最新稳定版）'
+        required: false
+        default: ''
+      arch:
+        description: '编译架构'
+        required: true
+        default: 'x86_64'
+        type: choice
+        options:
+          - x86_64
+          - arm64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安装基础依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            jq                           # 用于解析 kernel.org JSON
+
+      - name: 安装交叉编译工具（按需）
+        run: |
+          if [ "${{ inputs.arch }}" = "arm64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
+          # 可扩展其他架构，如 arm: gcc-arm-linux-gnueabihf
+
+      - name: 获取内核版本
+        id: kernel
+        run: |
+          if [ -z "${{ inputs.kernel_version }}" ]; then
+            # 从 kernel.org JSON API 获取最新稳定版
+            LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker=="stable") | .version')
+            echo "KERNEL_VER=${LATEST}" >> $GITHUB_OUTPUT
+            echo "自动获取最新稳定版: ${LATEST}"
+          else
+            echo "KERNEL_VER=${{ inputs.kernel_version }}" >> $GITHUB_OUTPUT
+            echo "使用指定版本: ${{ inputs.kernel_version }}"
+          fi
+
+      - name: 缓存内核源码压缩包
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: linux-${{ steps.kernel.outputs.KERNEL_VER }}.tar.xz
+          key: kernel-src-${{ steps.kernel.outputs.KERNEL_VER }}
+
+      - name: 下载内核源码（如未缓存）
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          KVER=${{ steps.kernel.outputs.KERNEL_VER }}
+          MAJOR=${KVER%%.*}                     # 主版本号（如 6.x）
+          wget https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${KVER}.tar.xz
+
+      - name: 解压内核源码
+        run: |
+          tar -xf linux-${{ steps.kernel.outputs.KERNEL_VER }}.tar.xz
+
+      - name: 配置内核
+        run: |
+          cd linux-${{ steps.kernel.outputs.KERNEL_VER }}
+          # 根据架构设置环境变量
+          if [ "${{ inputs.arch }}" = "arm64" ]; then
+            export ARCH=arm64
+            export CROSS_COMPILE=aarch64-linux-gnu-
+          else
+            export ARCH=x86_64
+            # x86_64 无需 CROSS_COMPILE
+          fi
+          # 优先使用当前运行环境的配置，否则使用默认配置
+          if [ -f /boot/config-$(uname -r) ]; then
+            cp /boot/config-$(uname -r) .config
+            echo "使用当前系统配置作为基础"
+          else
+            make defconfig
+            echo "使用默认 defconfig"
+          fi
+          # 将新选项设为默认值（适用于旧配置升级）
+          make olddefconfig
+
+      - name: 编译内核及生成 deb 包
+        run: |
+          cd linux-${{ steps.kernel.outputs.KERNEL_VER }}
+          # 设置交叉编译环境变量（再次确保）
+          if [ "${{ inputs.arch }}" = "arm64" ]; then
+            export ARCH=arm64
+            export CROSS_COMPILE=aarch64-linux-gnu-
+          else
+            export ARCH=x86_64
+          fi
+          # 使用所有 CPU 核心并行编译
+          make -j$(nproc) bindeb-pkg
+          # 将生成的 deb 包移动到统一目录
+          mkdir -p artifacts
+          mv ../*.deb artifacts/
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-debs-${{ inputs.arch }}-${{ steps.kernel.outputs.KERNEL_VER }}
+          path: artifacts/*.deb
+          retention-days: 7
