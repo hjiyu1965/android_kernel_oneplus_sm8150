@@ -26,7 +26,7 @@ jobs:
       - name: Download AOSP Clang 12 (4.14 kernel best compatible)
         run: |
           mkdir -p toolchain/clang
-          # 用AOSP官方预编译工具链，比llvm官方更适配安卓内核，下载更稳定
+          # 增加失败重试、错误退出参数，避免无效下载
           curl --fail --retry 5 --retry-delay 3 --location \
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz \
             | tar -xzf - -C toolchain/clang
@@ -34,15 +34,14 @@ jobs:
       - name: Download Linaro GCC aarch64 cross toolchain
         run: |
           mkdir -p toolchain/gcc
+          # 替换为清华镜像稳定链接，彻底解决404问题
           curl --fail --retry 5 --retry-delay 3 --location \
-            https://releases.linaro.org/components/toolchain/binaries/7.5-2019.10/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.10-x86_64_aarch64-linux-gnu.tar.xz \
+            https://mirrors.tuna.tsinghua.edu.cn/linaro/releases/components/toolchain/binaries/7.5-2019.10/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.10-x86_64_aarch64-linux-gnu.tar.xz \
             | tar -xJf - --strip-components=1 -C toolchain/gcc
 
       - name: Build kernel
         run: |
-          # 把工具链加入环境变量
           export PATH=$PWD/toolchain/clang/bin:$PWD/toolchain/gcc/bin:$PATH
-          # 内核编译核心参数，适配4.14+Clang
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -55,9 +54,7 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          # 加载设备配置
           make O=out vendor/sm8150-perf_defconfig
-          # 并行编译
           make O=out -j$(nproc)
 
       - name: Pack AnyKernel3 flashable zip
@@ -66,10 +63,8 @@ jobs:
           # 兼容两种常见内核镜像，避免复制失败
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || \
           cp out/arch/arm64/boot/Image AnyKernel3/
-          # 复制设备树（可选，适配你的设备）
           cp -r out/arch/arm64/boot/dts/* AnyKernel3/dtb/ 2>/dev/null || true
           
-          # 打包刷入包
           cd AnyKernel3
           zip -r9 OnePlus-SM8150-Kernel.zip * -x .git README.md
           cd ..
