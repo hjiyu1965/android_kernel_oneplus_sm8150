@@ -1,4 +1,4 @@
-name: Build OnePlus SM8150 Kernel 4.14
+name: Build OnePlus SM8150 Kernel 4.14 (Zero-Download Stable)
 
 on:
   push:
@@ -7,7 +7,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 固定使用Ubuntu 20.04，官方源内置GCC 7，完美适配4.14内核
+    runs-on: ubuntu-20.04
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -15,63 +16,53 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Install compile dependencies
+      - name: 一键安装所有依赖+交叉编译工具链（无外部下载）
         run: |
+          set -euo pipefail
           sudo apt update -y
+          # 直接从Ubuntu官方源安装所有需要的工具，包括适配4.14的GCC 7交叉编译链
           sudo apt install -y \
             git make bc bison flex libssl-dev libncurses-dev \
-            build-essential zip curl lz4 zstd libelf-dev device-tree-compiler \
-            python3 python3-pip
+            build-essential zip lz4 zstd libelf-dev device-tree-compiler \
+            python3 python3-pip gcc-7-aarch64-linux-gnu g++-7-aarch64-linux-gnu
 
-      - name: Download AOSP Clang 12 (4.14 kernel best compatible)
+      - name: 内核编译（纯GCC，零兼容问题）
         run: |
-          mkdir -p toolchain/clang
-          # 增加失败重试、错误退出参数，避免无效下载
-          curl --fail --retry 5 --retry-delay 3 --location \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz \
-            | tar -xzf - -C toolchain/clang
-
-      - name: Download Linaro GCC aarch64 cross toolchain
-        run: |
-          mkdir -p toolchain/gcc
-          # 替换为清华镜像稳定链接，彻底解决404问题
-          curl --fail --retry 5 --retry-delay 3 --location \
-            https://mirrors.tuna.tsinghua.edu.cn/linaro/releases/components/toolchain/binaries/7.5-2019.10/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.10-x86_64_aarch64-linux-gnu.tar.xz \
-            | tar -xJf - --strip-components=1 -C toolchain/gcc
-
-      - name: Build kernel
-        run: |
-          export PATH=$PWD/toolchain/clang/bin:$PWD/toolchain/gcc/bin:$PATH
+          set -euo pipefail
+          # 指定交叉编译工具链，适配4.14内核
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export LLVM=1
-          export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
+          export CC=aarch64-linux-gnu-gcc-7
+          export LD=aarch64-linux-gnu-ld
+          export AR=aarch64-linux-gnu-ar
+          export NM=aarch64-linux-gnu-nm
+          export OBJCOPY=aarch64-linux-gnu-objcopy
+          export OBJDUMP=aarch64-linux-gnu-objdump
+          export STRIP=aarch64-linux-gnu-strip
 
+          # 加载设备配置+编译
           make O=out vendor/sm8150-perf_defconfig
           make O=out -j$(nproc)
 
-      - name: Pack AnyKernel3 flashable zip
+      - name: 打包AnyKernel3刷入包
         run: |
+          set -euo pipefail
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-          # 兼容两种常见内核镜像，避免复制失败
+          # 兼容一加SM8150常见的两种内核镜像格式，避免复制失败
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || \
           cp out/arch/arm64/boot/Image AnyKernel3/
-          cp -r out/arch/arm64/boot/dts/* AnyKernel3/dtb/ 2>/dev/null || true
+          # 复制设备树文件
+          cp -r out/arch/arm64/boot/dts/qcom/* AnyKernel3/dtb/ 2>/dev/null || true
           
+          # 生成最终刷入包
           cd AnyKernel3
           zip -r9 OnePlus-SM8150-Kernel.zip * -x .git README.md
           cd ..
 
-      - name: Upload kernel artifact
+      - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus-SM8150-Kernel-4.14
+          name: OnePlus-SM8150-Kernel-4.14-Final
           path: AnyKernel3/OnePlus-SM8150-Kernel.zip
           retention-days: 30
