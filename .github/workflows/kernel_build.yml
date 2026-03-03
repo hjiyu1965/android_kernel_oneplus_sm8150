@@ -1,174 +1,28 @@
-name: 一加SM8150内核编译
-# 触发规则：push到指定分支、PR、手动触发
+name: Build Kernel
 on:
-  push:
-    branches: [ main, master, lineage-* ] # 改成你的内核源码实际分支
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch: # 支持GitHub页面手动触发编译
-    inputs:
-      build_type:
-        description: 编译类型
-        type: choice
-        default: release
-        options: [ release, debug ]
-      enable_ccache:
-        description: 开启ccache加速
-        type: boolean
-        default: true
+  workflow_dispatch:
 
-# 全局可配置参数（已修复嵌套引用问题）
-env:
-  # 基础编译配置
-  ARCH: arm64
-  DEFCONFIG: vendor/oneplus/sm8150_defconfig # 改成你的设备实际defconfig文件名
-  OUTPUT_DIR: out
-  JOBS: $(nproc)
-
-  # 工具链配置（二选一，默认Clang）
-  TOOLCHAIN: clang
-  # Clang配置（已修复env嵌套引用，直接写死版本号，避免语法错误）
-  LLVM_VERSION: 18
-  LLVM_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r18dev.tar.gz
-  # GCC配置（已修复env嵌套引用）
-  GCC_VERSION: 7.5.0
-  GCC_URL: https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.5.0-x86_64_aarch64-linux-gnu.tar.xz
-  CROSS_COMPILE: aarch64-linux-gnu-
-
-  # AnyKernel3 刷入包配置
-  ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git # 改成适配你设备的AnyKernel3仓库
-  ANYKERNEL_BRANCH: master
-  ZIP_NAME: OnePlus-SM8150-Kernel-${{ github.sha }}.zip
-
-# 编译任务
 jobs:
-  build-kernel:
-    name: 内核编译
+  Build-Kernel:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
-      # 步骤1：检出内核源码
-      - name: 检出内核源码
-        uses: actions/checkout@v4
+      - name: Build Kernel
+        uses: dabao1955/kernel_build_action@v1  # or a specific commit
         with:
-          submodules: recursive
-          fetch-depth: 1
+          kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
+          kernel-dir: msm-4.9
+          kernel-branch: lineage-23.0
+          config: vendor/sm8150-perf_defconfig
+          arch: arm64
+          aosp-gcc: true
+          aosp-clang: true
+          android-version: 11
+          aosp-clang-version: r383902
+          disable-lto: true
+          anykernel3: true
 
-      # 步骤2：安装编译依赖
-      - name: 安装编译依赖
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            build-essential git bc bison flex libssl-dev libncurses5-dev \
-            zip curl wget ccache python3 python3-pip device-tree-compiler \
-            libelf-dev lz4 zstd
-
-      # 步骤3：配置ccache缓存
-      - name: 配置ccache缓存
-        if: ${{ inputs.enable_ccache != false }}
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: kernel-ccache-${{ env.ARCH }}-${{ env.DEFCONFIG }}-${{ github.sha }}
-          restore-keys: |
-            kernel-ccache-${{ env.ARCH }}-${{ env.DEFCONFIG }}-
-          max-size: 2G
-
-      # 步骤4：配置编译工具链
-      - name: 配置Clang工具链
-        if: ${{ env.TOOLCHAIN == 'clang' }}
-        run: |
-          set -euo pipefail
-          mkdir -p toolchain/llvm
-          wget -O llvm.tar.gz ${{ env.LLVM_URL }}
-          tar -xzf llvm.tar.gz -C toolchain/llvm
-          echo "$(pwd)/toolchain/llvm/bin" >> $GITHUB_PATH
-          clang --version
-
-      - name: 配置GCC工具链
-        if: ${{ env.TOOLCHAIN == 'gcc' }}
-        run: |
-          set -euo pipefail
-          mkdir -p toolchain/gcc
-          wget -O gcc.tar.xz ${{ env.GCC_URL }}
-          tar -xJf gcc.tar.xz -C toolchain/gcc --strip-components=1
-          echo "$(pwd)/toolchain/gcc/bin" >> $GITHUB_PATH
-          ${{ env.CROSS_COMPILE }}gcc --version
-
-      # 步骤5：配置内核
-      - name: 配置内核
-        run: |
-          set -euo pipefail
-          make O=${{ env.OUTPUT_DIR }} ARCH=${{ env.ARCH }} ${{ env.DEFCONFIG }}
-          # debug模式开启调试配置
-          if [[ "${{ inputs.build_type }}" == "debug" ]]; then
-            ./scripts/config --file ${{ env.OUTPUT_DIR }}/.config --enable DEBUG_INFO
-            ./scripts/config --file ${{ env.OUTPUT_DIR }}/.config --enable DEBUG_FS
-          fi
-
-      # 步骤6：编译内核
-      - name: 编译内核（Clang）
-        if: ${{ env.TOOLCHAIN == 'clang' }}
-        run: |
-          set -euo pipefail
-          export CCACHE_DIR=~/.ccache
-          make O=${{ env.OUTPUT_DIR }} \
-            ARCH=${{ env.ARCH }} \
-            LLVM=1 \
-            CC="ccache clang" \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            -j${{ env.JOBS }}
-
-      - name: 编译内核（GCC）
-        if: ${{ env.TOOLCHAIN == 'gcc' }}
-        run: |
-          set -euo pipefail
-          export CCACHE_DIR=~/.ccache
-          make O=${{ env.OUTPUT_DIR }} \
-            ARCH=${{ env.ARCH }} \
-            CC="ccache ${{ env.CROSS_COMPILE }}gcc" \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            -j${{ env.JOBS }}
-
-      # 步骤7：打包AnyKernel3刷入包
-      - name: 打包Recovery刷入包
-        run: |
-          set -euo pipefail
-          git clone --depth=1 -b ${{ env.ANYKERNEL_BRANCH }} ${{ env.ANYKERNEL_REPO }} anykernel3
-          
-          # 复制内核镜像（SM8150通用镜像路径，不对请自行调整）
-          cp ${{ env.OUTPUT_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb anykernel3/
-          # 复制设备树与模块
-          cp -r ${{ env.OUTPUT_DIR }}/arch/${{ env.ARCH }}/boot/dts/* anykernel3/dtb/ 2>/dev/null || true
-          make O=${{ env.OUTPUT_DIR }} ARCH=${{ env.ARCH }} modules_install INSTALL_MOD_PATH=./modules
-          cp -r ./modules/lib/modules/* anykernel3/modules/ 2>/dev/null || true
-          
-          # 打包zip
-          cd anykernel3
-          zip -r9 ../${{ env.ZIP_NAME }} * -x .git README.md
-          cd ..
-
-      # 步骤8：上传编译产物
-      - name: 上传编译产物
+      - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_NAME }}
-          retention-days: 30
-
-      # 可选：推送Tag时自动发布Release
-      - name: 发布到GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.ZIP_NAME }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: OnePlus-SM8150-Kernel
+          path: output/*.zip
