@@ -1,4 +1,4 @@
-name: Build OnePlus SM8150 Kernel 4.14 (Zero-Download Stable)
+name: Build OnePlus SM8150 Kernel 4.14 (Fast Runner)
 
 on:
   push:
@@ -7,8 +7,8 @@ on:
 
 jobs:
   build:
-    # 固定使用Ubuntu 20.04，官方源内置GCC 7，完美适配4.14内核
-    runs-on: ubuntu-20.04
+    # 换成ubuntu-latest，Runner资源最多，调度最快
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -16,24 +16,23 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: 一键安装所有依赖+交叉编译工具链（无外部下载）
+      - name: 一键安装依赖+适配4.14的交叉编译工具链
         run: |
           set -euo pipefail
           sudo apt update -y
-          # 直接从Ubuntu官方源安装所有需要的工具，包括适配4.14的GCC 7交叉编译链
+          # Ubuntu 22.04官方源自带的交叉编译GCC，完美向下兼容4.14内核，无需额外下载
           sudo apt install -y \
             git make bc bison flex libssl-dev libncurses-dev \
             build-essential zip lz4 zstd libelf-dev device-tree-compiler \
-            python3 python3-pip gcc-7-aarch64-linux-gnu g++-7-aarch64-linux-gnu
+            python3 python3-pip gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: 内核编译（纯GCC，零兼容问题）
         run: |
           set -euo pipefail
-          # 指定交叉编译工具链，适配4.14内核
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=aarch64-linux-gnu-gcc-7
+          export CC=aarch64-linux-gnu-gcc
           export LD=aarch64-linux-gnu-ld
           export AR=aarch64-linux-gnu-ar
           export NM=aarch64-linux-gnu-nm
@@ -41,7 +40,6 @@ jobs:
           export OBJDUMP=aarch64-linux-gnu-objdump
           export STRIP=aarch64-linux-gnu-strip
 
-          # 加载设备配置+编译
           make O=out vendor/sm8150-perf_defconfig
           make O=out -j$(nproc)
 
@@ -49,13 +47,11 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-          # 兼容一加SM8150常见的两种内核镜像格式，避免复制失败
+          # 兼容一加SM8150的两种常见内核镜像格式
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || \
           cp out/arch/arm64/boot/Image AnyKernel3/
-          # 复制设备树文件
           cp -r out/arch/arm64/boot/dts/qcom/* AnyKernel3/dtb/ 2>/dev/null || true
           
-          # 生成最终刷入包
           cd AnyKernel3
           zip -r9 OnePlus-SM8150-Kernel.zip * -x .git README.md
           cd ..
@@ -63,6 +59,6 @@ jobs:
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus-SM8150-Kernel-4.14-Final
+          name: OnePlus-SM8150-Kernel-4.14
           path: AnyKernel3/OnePlus-SM8150-Kernel.zip
           retention-days: 30
