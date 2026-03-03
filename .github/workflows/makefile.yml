@@ -3,7 +3,7 @@
 	  workflow_dispatch:
 	    inputs:
 	      kernel_version:
-	        description: '指定内核版本 (留空则自动获取最新稳定版)'
+	        description: '指定内核版本(留空则自动获取最新稳定版)'
 	        required: false
 	        default: ''
 	      arch:
@@ -21,7 +21,7 @@
 	    - name: 安装编译依赖
 	      run: |
 	        sudo apt-get update
-	        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc rsync wget xz-utils
+	        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc
 	    - name: 获取内核源码
 	      id: get_kernel
 	      run: |
@@ -40,7 +40,7 @@
 	    - name: 配置内核
 	      run: |
 	        cd linux-${{ steps.get_kernel.outputs.KERNEL_VER }}
-	        # 使用当前系统的配置作为基础，确保硬件兼容性
+	        # 使用当前系统的配置作为基础,确保硬件兼容性
 	        cp /boot/config-$(uname -r) .config 2>/dev/null || make defconfig
 	        # 自动设置新选项为默认值
 	        make olddefconfig
