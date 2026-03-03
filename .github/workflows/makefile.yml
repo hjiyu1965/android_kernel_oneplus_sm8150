@@ -1,28 +1,60 @@
-# A simple action usage
-name: Build Kernel
-on:
-  workflow_dispatch:
-
-jobs:
-  Build-Kernel:
-    strategy:
-      fail-fast: false
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Build Kernel
-        uses: dabao1955/kernel_build_action@main
-        with:
-          kernel-url: https://github.com/hjiyu1965/android_kernel_oneplus_sm8150
-          kernel-dir: msm-4.9
-          kernel-branch: lineage-23.0
-          config: vendor/sm8150-perf_defconfig
-          arch: arm64
-          aosp-gcc: true
-          aosp-clang: true
-          android-version: 11
-          aosp-clang-version: r383902
-          disable-lto: true
-          anykernel3: true
+	name: Build Linux Kernel
+	on:
+	  workflow_dispatch:
+	    inputs:
+	      kernel_version:
+	        description: '指定内核版本 (留空则自动获取最新稳定版)'
+	        required: false
+	        default: ''
+	      arch:
+	        description: '编译架构'
+	        required: true
+	        default: 'x86_64'
+	        type: choice
+	        options:
+	          - x86_64
+	          - arm64
+	jobs:
+	  build:
+	    runs-on: ubuntu-latest
+	    steps:
+	    - name: 安装编译依赖
+	      run: |
+	        sudo apt-get update
+	        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc rsync wget xz-utils
+	    - name: 获取内核源码
+	      id: get_kernel
+	      run: |
+	        if [ -z "${{ inputs.kernel_version }}" ]; then
+	          # 自动获取最新稳定版内核
+	          KERNEL_VER=$(curl -s https://www.kernel.org/ | grep -A1 'latest_link' | grep -oP 'linux-\K([0-9]+\.[0-9]+\.[0-9]+)' | head -1)
+	          echo "KERNEL_VER=${KERNEL_VER}" >> $GITHUB_OUTPUT
+	          echo "正在下载最新内核版本: ${KERNEL_VER}"
+	        else
+	          KERNEL_VER="${{ inputs.kernel_version }}"
+	          echo "KERNEL_VER=${KERNEL_VER}" >> $GITHUB_OUTPUT
+	          echo "使用指定版本: ${KERNEL_VER}"
+	        fi
+	        wget https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_VER%%.*}.x/linux-${KERNEL_VER}.tar.xz
+	        tar -xvf linux-${KERNEL_VER}.tar.xz
+	    - name: 配置内核
+	      run: |
+	        cd linux-${{ steps.get_kernel.outputs.KERNEL_VER }}
+	        # 使用当前系统的配置作为基础，确保硬件兼容性
+	        cp /boot/config-$(uname -r) .config 2>/dev/null || make defconfig
+	        # 自动设置新选项为默认值
+	        make olddefconfig
+	    - name: 并行编译内核
+	      run: |
+	        cd linux-${{ steps.get_kernel.outputs.KERNEL_VER }}
+	        # 使用所有可用核心进行编译
+	        make -j$(nproc) bindeb-pkg
+	        # 编译完成后移动构建产物以便上传
+	        mkdir -p artifacts
+	        mv ../*.deb artifacts/
+	    - name: 上传构建产物
+	      uses: actions/upload-artifact@v4
+	      with:
+	        name: kernel-debs-${{ steps.get_kernel.outputs.KERNEL_VER }}
+	        path: artifacts/*.deb
+	        retention-days: 7
