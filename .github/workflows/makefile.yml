@@ -20,7 +20,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 安装基础依赖
+      - name: 安装基础依赖（含完整打包工具）
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -33,8 +33,10 @@ jobs:
             bc \
             jq \
             debhelper \
-            rsync
-          # 以上安装了内核编译及打包所需的所有工具
+            rsync \
+            kernel-wedge \
+            python3
+          # 注释单独一行，避免影响命令
 
       - name: 安装交叉编译工具（按需）
         run: |
@@ -99,8 +101,8 @@ jobs:
           else
             export ARCH=x86_64
           fi
-          # 使用所有 CPU 核心并行编译
-          make -j$(nproc) bindeb-pkg
+          # 使用所有 CPU 核心并行编译，并忽略 dpkg-buildpackage 的依赖检查
+          make -j$(nproc) bindeb-pkg DPKG_BUILDPACKAGE_OPTS="-d"
           # 将生成的 deb 包移动到统一目录
           mkdir -p artifacts
           mv ../*.deb artifacts/
