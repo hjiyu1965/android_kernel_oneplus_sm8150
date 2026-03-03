@@ -23,10 +23,8 @@ env:
   OUTPUT_DIR: out
   JOBS: $(nproc)
 
-  # 工具链配置（适配4.14内核，使用更稳定的Clang 12）
+  # 工具链配置（Clang 12，适配4.14内核）
   TOOLCHAIN: clang
-  # Clang 12 对 4.14 内核兼容性更好
-  LLVM_VERSION: 12
   LLVM_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
   CROSS_COMPILE: aarch64-linux-gnu-
 
@@ -134,4 +132,3 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-、
