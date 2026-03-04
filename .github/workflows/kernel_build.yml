@@ -1,25 +1,33 @@
 name: Build OnePlus SM8150 Kernel (4.14)
 on:
-  # 推送至 lineage-23.0 分支时自动触发
   push:
     branches: [ "lineage-23.0" ]
-  # 支持手动触发编译
   workflow_dispatch:
 
 jobs:
   build-kernel:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KBUILD_BUILD_USER: builder
+      KBUILD_BUILD_HOST: github-action
+      DEFCONFIG_NAME: sm8150-perf_defconfig
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
+      CLANG_VERSION: clang-r416183b
+      ANDROID_TAG: android-13.0.0_r1
+
     steps:
-      - name: 检出内核源码
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           ref: lineage-23.0
           submodules: recursive
           fetch-depth: 0
 
-      - name: 配置 ccache 编译缓存
+      - name: Setup ccache Cache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
@@ -27,106 +35,129 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-sm8150-kernel-ccache-
 
-      - name: 安装编译依赖
+      - name: Install Build Dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libncurses5-dev \
-            zip unzip curl wget git python3 python2 libelf-dev kmod cpio ccache
-          # 适配4.14内核旧脚本，设置python2为默认python
+            zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache
+          # 适配4.14内核，设置python2为默认python
           sudo ln -sf /usr/bin/python2 /usr/bin/python
-          # 配置ccache
+          # 配置ccache编译缓存
           ccache -M 10G
           ccache -o compression=true
+          ccache -s
 
-      - name: 下载安卓交叉编译工具链
+      - name: Download & Setup Cross Compile Toolchain
         run: |
-          # 适配LineageOS 23.0/Android 13的clang工具链，兼容4.14内核
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r1/clang-r416183b.tar.gz
-          mkdir -p toolchain/clang
-          tar -xzf clang-r416183b.tar.gz -C toolchain/clang
+          set -euo pipefail
+          mkdir -p ${TOOLCHAIN_DIR}/clang ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9 ${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9
 
-          # 64位gcc兼容工具链
-          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-13.0.0_r1.tar.gz
-          mkdir -p toolchain/aarch64-linux-android-4.9
-          tar -xzf android-13.0.0_r1.tar.gz -C toolchain/aarch64-linux-android-4.9
+          # 下载Clang工具链
+          wget -q -O clang.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${ANDROID_TAG}/${CLANG_VERSION}.tar.gz
+          tar -xzf clang.tar.gz -C ${TOOLCHAIN_DIR}/clang
+          rm -f clang.tar.gz
 
-          # 32位gcc兼容工具链
-          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-13.0.0_r1.tar.gz
-          mkdir -p toolchain/arm-linux-androideabi-4.9
-          tar -xzf android-13.0.0_r1.tar.gz -C toolchain/arm-linux-androideabi-4.9
+          # 下载aarch64 GCC工具链
+          wget -q -O aarch64-gcc.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz
+          tar -xzf aarch64-gcc.tar.gz -C ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9
+          rm -f aarch64-gcc.tar.gz
 
-          # 工具链加入系统PATH
-          echo "$GITHUB_WORKSPACE/toolchain/clang/bin" >> $GITHUB_PATH
-          echo "$GITHUB_WORKSPACE/toolchain/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
-          echo "$GITHUB_WORKSPACE/toolchain/arm-linux-androideabi-4.9/bin" >> $GITHUB_PATH
+          # 下载arm32 GCC工具链
+          wget -q -O arm32-gcc.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz
+          tar -xzf arm32-gcc.tar.gz -C ${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9
+          rm -f arm32-gcc.tar.gz
 
-      - name: 验证工具链环境
+          # 工具链加入系统PATH，后续步骤可直接调用
+          echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
+          echo "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
+          echo "${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9/bin" >> $GITHUB_PATH
+
+      - name: Verify Toolchain Environment
         run: |
-          echo "Python版本: $(python --version)"
-          echo "Clang版本: $(clang --version)"
-          echo "aarch64编译器版本: $(aarch64-linux-android-gcc --version)"
-          echo "ccache版本: $(ccache --version)"
+          set -euo pipefail
+          echo "=== Toolchain Verification ==="
+          python --version
+          clang --version
+          aarch64-linux-android-gcc --version
+          ccache --version
+          which clang aarch64-linux-android-gcc arm-linux-androideabi-gcc
 
-      - name: 加载内核defconfig配置
+      - name: Load Kernel Defconfig
         run: |
-          # 核心环境变量
-          export ARCH=arm64
-          export SUBARCH=arm64
+          set -euo pipefail
           export CC="ccache clang"
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
-          export KBUILD_BUILD_USER=builder
-          export KBUILD_BUILD_HOST=github-action
-          export DEFCONFIG=sm8150-perf_defconfig
 
-          # 兼容你指定的configs/vendor路径，自动复制defconfig到标准目录
-          if [ -f configs/vendor/${DEFCONFIG} ]; then
-            cp configs/vendor/${DEFCONFIG} arch/arm64/configs/
-            echo "已复制defconfig到arch/arm64/configs目录"
-          elif [ -f arch/arm64/configs/vendor/${DEFCONFIG} ]; then
-            export DEFCONFIG=vendor/${DEFCONFIG}
-            echo "已识别vendor子目录defconfig"
+          # 多路径兼容defconfig，按优先级查找
+          DEFCONFIG_PATH=""
+          if [ -f "arch/${ARCH}/configs/vendor/${DEFCONFIG_NAME}" ]; then
+            DEFCONFIG_PATH="vendor/${DEFCONFIG_NAME}"
+          elif [ -f "configs/vendor/${DEFCONFIG_NAME}" ]; then
+            cp -f configs/vendor/${DEFCONFIG_NAME} arch/${ARCH}/configs/
+            DEFCONFIG_PATH="${DEFCONFIG_NAME}"
+          elif [ -f "arch/${ARCH}/configs/${DEFCONFIG_NAME}" ]; then
+            DEFCONFIG_PATH="${DEFCONFIG_NAME}"
+          else
+            echo "ERROR: Defconfig ${DEFCONFIG_NAME} not found in any supported path!"
+            exit 1
           fi
 
+          echo "Found defconfig at: arch/${ARCH}/configs/${DEFCONFIG_PATH}"
           # 生成编译配置
-          make O=out ${DEFCONFIG}
+          make O=out ${DEFCONFIG_PATH}
+          # 校验配置生成成功
+          if [ ! -f out/.config ]; then
+            echo "ERROR: Failed to generate kernel .config file!"
+            exit 1
+          fi
 
-      - name: 编译内核
+      - name: Compile Kernel
         run: |
-          # 复用环境变量
-          export ARCH=arm64
-          export SUBARCH=arm64
+          set -euo pipefail
           export CC="ccache clang"
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
-          export KBUILD_BUILD_USER=builder
-          export KBUILD_BUILD_HOST=github-action
 
-          # 全量编译，自动使用runner最大核心数
+          # 全量编译内核
           make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
           # 安装并剥离内核模块
           make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
 
-      - name: 打包编译产物
+          # 校验核心编译产物
+          if [ ! -f out/arch/${ARCH}/boot/Image.gz-dtb ]; then
+            echo "ERROR: Kernel Image.gz-dtb not built successfully!"
+            exit 1
+          fi
+          if [ ! -f out/arch/${ARCH}/boot/dtbo.img ]; then
+            echo "ERROR: dtbo.img not built successfully!"
+            exit 1
+          fi
+          ccache -s
+
+      - name: Package Build Artifacts
         run: |
+          set -euo pipefail
           BUILD_DATE=$(date +%Y%m%d)
           ARTIFACT_NAME=kernel-sm8150-lineage23-${BUILD_DATE}
-          
-          # 整理产物
-          mkdir -p ${ARTIFACT_NAME}
-          cp out/arch/arm64/boot/Image.gz-dtb ${ARTIFACT_NAME}/
-          cp out/arch/arm64/boot/dtbo.img ${ARTIFACT_NAME}/
-          cp -r out/modules ${ARTIFACT_NAME}/
-          cp out/.config ${ARTIFACT_NAME}/kernel_defconfig
-          
-          # 打包成zip
-          zip -r ${ARTIFACT_NAME}.zip ${ARTIFACT_NAME}/
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-      - name: 上传编译产物
+          # 整理编译产物
+          mkdir -p ${ARTIFACT_NAME}
+          cp -v out/arch/${ARCH}/boot/Image.gz-dtb ${ARTIFACT_NAME}/
+          cp -v out/arch/${ARCH}/boot/dtbo.img ${ARTIFACT_NAME}/
+          cp -vr out/modules ${ARTIFACT_NAME}/
+          cp -v out/.config ${ARTIFACT_NAME}/kernel_defconfig
+          cp -v Makefile ${ARTIFACT_NAME}/
+
+          # 打包为zip
+          zip -r ${ARTIFACT_NAME}.zip ${ARTIFACT_NAME}/
+
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
