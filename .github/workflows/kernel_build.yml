@@ -50,18 +50,18 @@ jobs:
         run: |
           set -euo pipefail
           TOOLCHAIN_DIR="${{ github.workspace }}/toolchain"
-          mkdir -p ${TOOLCHAIN_DIR}/clang ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9 ${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9
+          mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9" "${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9"
 
           wget -q -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${ANDROID_TAG}/${CLANG_VERSION}.tar.gz"
-          tar -xzf clang.tar.gz -C ${TOOLCHAIN_DIR}/clang
+          tar -xzf clang.tar.gz -C "${TOOLCHAIN_DIR}/clang"
           rm -f clang.tar.gz
 
           wget -q -O aarch64-gcc.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
-          tar -xzf aarch64-gcc.tar.gz -C ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9
+          tar -xzf aarch64-gcc.tar.gz -C "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9"
           rm -f aarch64-gcc.tar.gz
 
           wget -q -O arm32-gcc.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
-          tar -xzf arm32-gcc.tar.gz -C ${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9
+          tar -xzf arm32-gcc.tar.gz -C "${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9"
           rm -f arm32-gcc.tar.gz
 
           echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
@@ -89,7 +89,7 @@ jobs:
           if [ -f "arch/${ARCH}/configs/vendor/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="vendor/${DEFCONFIG_NAME}"
           elif [ -f "configs/vendor/${DEFCONFIG_NAME}" ]; then
-            cp -f configs/vendor/${DEFCONFIG_NAME} arch/${ARCH}/configs/
+            cp -f "configs/vendor/${DEFCONFIG_NAME}" "arch/${ARCH}/configs/"
             DEFCONFIG_PATH="${DEFCONFIG_NAME}"
           elif [ -f "arch/${ARCH}/configs/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="${DEFCONFIG_NAME}"
@@ -99,7 +99,7 @@ jobs:
           fi
 
           echo "Use defconfig: ${DEFCONFIG_PATH}"
-          make O=out ${DEFCONFIG_PATH}
+          make O=out "${DEFCONFIG_PATH}"
           if [ ! -f out/.config ]; then
             echo "ERROR: .config generate failed!"
             exit 1
@@ -116,7 +116,7 @@ jobs:
           make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
           make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
 
-          if [ ! -f out/arch/${ARCH}/boot/Image.gz-dtb ]; then
+          if [ ! -f "out/arch/${ARCH}/boot/Image.gz-dtb" ]; then
             echo "ERROR: Kernel build failed!"
             exit 1
           fi
@@ -126,19 +126,19 @@ jobs:
         run: |
           set -euo pipefail
           BUILD_DATE=$(date +%Y%m%d)
-          ARTIFACT_NAME=kernel-sm8150-lineage23-${BUILD_DATE}
+          ARTIFACT_NAME="kernel-sm8150-lineage23-${BUILD_DATE}"
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-          mkdir -p ${ARTIFACT_NAME}
-          cp out/arch/${ARCH}/boot/Image.gz-dtb ${ARTIFACT_NAME}/
-          cp out/arch/${ARCH}/boot/dtbo.img ${ARTIFACT_NAME}/
-          cp -r out/modules ${ARTIFACT_NAME}/
-          cp out/.config ${ARTIFACT_NAME}/kernel_defconfig
-          zip -r ${ARTIFACT_NAME}.zip ${ARTIFACT_NAME}/
+          mkdir -p "${ARTIFACT_NAME}"
+          cp "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
+          cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
+          cp -r "out/modules" "${ARTIFACT_NAME}/"
+          cp "out/.config" "${ARTIFACT_NAME}/kernel_defconfig"
+          zip -r "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}/"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: *.zip
+          path: "*.zip"
           retention-days: 30
