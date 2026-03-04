@@ -1,7 +1,7 @@
 name: Build OnePlus SM8150 Kernel (4.14)
 on:
   push:
-    branches: [ "lineage-23.0" ]
+    branches: [ "谱系-23.0" ]
   workflow_dispatch:
 
 jobs:
@@ -9,20 +9,22 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+    # 仅用固定全局变量，禁止使用任何上下文变量
     env:
       ARCH: arm64
       SUBARCH: arm64
       KBUILD_BUILD_USER: builder
       KBUILD_BUILD_HOST: github-action
       DEFCONFIG_NAME: sm8150-perf_defconfig
-      CLANG_VERSION: clang-r416183b
-      ANDROID_TAG: android-13.0.0_r1
+      # 适配4.14内核的最稳定clang版本，兼容性拉满
+      CLANG_VERSION: clang-r383902b
+      ANDROID_TAG: android-11.0.0_r48
 
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          ref: lineage-23.0
+          ref: 谱系-23.0
           submodules: recursive
           fetch-depth: 0
 
@@ -41,41 +43,67 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libncurses5-dev \
             zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache
+          # 适配4.14内核，固定python2为默认
           sudo ln -sf /usr/bin/python2 /usr/bin/python
+          # 配置ccache
           ccache -M 10G
           ccache -o compression=true
           ccache -s
 
-      - name: Download & Setup Toolchain
+      - name: Download & Setup Cross Compile Toolchain
         run: |
           set -euo pipefail
+          # 【关键修复】step内定义路径变量，正确调用github上下文
           TOOLCHAIN_DIR="${{ github.workspace }}/toolchain"
-          mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9" "${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9"
+          # 清理旧目录，避免残留文件冲突
+          rm -rf ${TOOLCHAIN_DIR}
+          mkdir -p ${TOOLCHAIN_DIR}/clang ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9
 
-          wget -q -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${ANDROID_TAG}/${CLANG_VERSION}.tar.gz"
-          tar -xzf clang.tar.gz -C "${TOOLCHAIN_DIR}/clang"
-          rm -f clang.tar.gz
+          echo "=== 开始下载工具链（清华镜像源，国内稳定访问） ==="
+          # 【关键修复】替换为清华AOSP镜像，国内可稳定下载，加重试、SSL跳过
+          # 1. 下载clang工具链（适配4.14内核的稳定版）
+          wget -t 5 --no-check-certificate -q -O clang.tar.gz \
+            "https://mirrors.tuna.tsinghua.edu.cn/aosp/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${ANDROID_TAG}/${CLANG_VERSION}.tar.gz"
+          
+          # 2. 下载aarch64 GCC工具链
+          wget -t 5 --no-check-certificate -q -O aarch64-gcc.tar.gz \
+            "https://mirrors.tuna.tsinghua.edu.cn/aosp/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
 
-          wget -q -O aarch64-gcc.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
-          tar -xzf aarch64-gcc.tar.gz -C "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9"
-          rm -f aarch64-gcc.tar.gz
+          echo "=== 解压工具链 ==="
+          tar -xzf clang.tar.gz -C ${TOOLCHAIN_DIR}/clang
+          tar -xzf aarch64-gcc.tar.gz -C ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9
+          
+          # 清理安装包
+          rm -f clang.tar.gz aarch64-gcc.tar.gz
 
-          wget -q -O arm32-gcc.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
-          tar -xzf arm32-gcc.tar.gz -C "${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9"
-          rm -f arm32-gcc.tar.gz
+          echo "=== 修复工具链权限 ==="
+          chmod -R +x ${TOOLCHAIN_DIR}/clang/bin
+          chmod -R +x ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin
 
+          echo "=== 校验工具链路径 ==="
+          # 【关键修复】提前校验文件是否存在，直接定位下载/解压失败问题
+          if [ ! -f ${TOOLCHAIN_DIR}/clang/bin/clang ]; then
+            echo "ERROR: clang 可执行文件不存在，下载/解压失败！"
+            exit 1
+          fi
+          if [ ! -f ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc ]; then
+            echo "ERROR: aarch64 GCC 可执行文件不存在，下载/解压失败！"
+            exit 1
+          fi
+
+          echo "=== 工具链加入系统PATH ==="
           echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
           echo "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
-          echo "${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9/bin" >> $GITHUB_PATH
 
-      - name: Verify Toolchain
+      - name: Verify Toolchain Environment
         run: |
           set -euo pipefail
-          echo "=== Toolchain Check ==="
+          echo "=== 工具链环境校验 ==="
           python --version
           clang --version
           aarch64-linux-android-gcc --version
-          which clang aarch64-linux-android-gcc arm-linux-androideabi-gcc
+          which clang aarch64-linux-android-gcc
+          echo "=== 环境校验完成 ==="
 
       - name: Load Kernel Defconfig
         run: |
@@ -83,25 +111,25 @@ jobs:
           export CC="ccache clang"
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
           DEFCONFIG_PATH=""
           if [ -f "arch/${ARCH}/configs/vendor/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="vendor/${DEFCONFIG_NAME}"
           elif [ -f "configs/vendor/${DEFCONFIG_NAME}" ]; then
-            cp -f "configs/vendor/${DEFCONFIG_NAME}" "arch/${ARCH}/configs/"
+            cp -f configs/vendor/${DEFCONFIG_NAME} arch/${ARCH}/configs/
             DEFCONFIG_PATH="${DEFCONFIG_NAME}"
           elif [ -f "arch/${ARCH}/configs/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="${DEFCONFIG_NAME}"
           else
-            echo "ERROR: Defconfig ${DEFCONFIG_NAME} not found!"
+            echo "ERROR: Defconfig ${DEFCONFIG_NAME} 未找到！请确认文件路径！"
             exit 1
           fi
 
-          echo "Use defconfig: ${DEFCONFIG_PATH}"
-          make O=out "${DEFCONFIG_PATH}"
+          echo "使用defconfig: ${DEFCONFIG_PATH}"
+          make O=out ${DEFCONFIG_PATH}
+          
           if [ ! -f out/.config ]; then
-            echo "ERROR: .config generate failed!"
+            echo "ERROR: 内核.config文件生成失败！"
             exit 1
           fi
 
@@ -111,34 +139,36 @@ jobs:
           export CC="ccache clang"
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
+          echo "=== 开始编译内核 ==="
           make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
           make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
 
-          if [ ! -f "out/arch/${ARCH}/boot/Image.gz-dtb" ]; then
-            echo "ERROR: Kernel build failed!"
+          # 校验核心编译产物
+          if [ ! -f out/arch/${ARCH}/boot/Image.gz-dtb ]; then
+            echo "ERROR: 内核Image.gz-dtb编译失败！"
             exit 1
           fi
+          echo "=== 内核编译完成 ==="
           ccache -s
 
-      - name: Package Artifacts
+      - name: Package Build Artifacts
         run: |
           set -euo pipefail
           BUILD_DATE=$(date +%Y%m%d)
-          ARTIFACT_NAME="kernel-sm8150-lineage23-${BUILD_DATE}"
+          ARTIFACT_NAME=kernel-sm8150-lineage23-${BUILD_DATE}
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-          mkdir -p "${ARTIFACT_NAME}"
-          cp "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
-          cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
-          cp -r "out/modules" "${ARTIFACT_NAME}/"
-          cp "out/.config" "${ARTIFACT_NAME}/kernel_defconfig"
-          zip -r "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}/"
+          mkdir -p ${ARTIFACT_NAME}
+          cp out/arch/${ARCH}/boot/Image.gz-dtb ${ARTIFACT_NAME}/
+          cp out/arch/${ARCH}/boot/dtbo.img ${ARTIFACT_NAME}/
+          cp -r out/modules ${ARTIFACT_NAME}/
+          cp out/.config ${ARTIFACT_NAME}/kernel_defconfig
+          zip -r ${ARTIFACT_NAME}.zip ${ARTIFACT_NAME}/
 
-      - name: Upload Artifacts
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: "*.zip"
+          path: *.zip
           retention-days: 30
