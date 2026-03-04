@@ -1,7 +1,7 @@
 name: Build OnePlus SM8150 Kernel (4.14)
 on:
   push:
-    branches: [ "谱系-23.0" ]
+    branches: [ "lineage-23.0" ]
   workflow_dispatch:
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          ref: "谱系-23.0"
+          ref: "lineage-23.0"
           submodules: recursive
           fetch-depth: 0
 
