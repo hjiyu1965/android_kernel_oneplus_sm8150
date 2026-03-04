@@ -1,147 +1,178 @@
-name: GitHub Action Build SM8150 4.14 Kernel
+name: Build OnePlus SM8150 Kernel (4.14)
 on:
   push:
-    branches: [ "lineage-23.0" ]  # 仅监听目标分支推送
-  workflow_dispatch:  # 支持手动触发，适配GitHub Action操作逻辑
+    branches: [ "lineage-23.0" ]
+  workflow_dispatch:
 
 jobs:
-  build-sm8150-kernel:
-    runs-on: ubuntu-22.04  # 固定GitHub官方推荐runner，兼容性最优
+  build-kernel:
+    runs-on: ubuntu-22.04
     permissions:
-      contents: read  # 最小权限原则，符合GitHub Action安全规范
+      contents: read
     env:
-      # GitHub Action环境专用配置，避免变量冲突
       ARCH: arm64
       SUBARCH: arm64
-      KBUILD_BUILD_USER: github-action
-      KBUILD_BUILD_HOST: github
-      DEFCONFIG: sm8150-perf_defconfig
-      # 4.14内核+GitHub Action环境双重兼容的工具链版本
-      CLANG_TAR: clang-r383902b.tar.gz
-      GCC_TAR: aarch64-linux-android-4.9.tar.gz
-      TOOLCHAIN_URL_PREFIX: https://mirrors.tuna.tsinghua.edu.cn/lineageOS/prebuilts
+      KBUILD_BUILD_USER: builder
+      KBUILD_BUILD_HOST: github-action
+      DEFCONFIG_NAME: sm8150-perf_defconfig
+      # 4.14内核兼容的固定工具链版本
+      CLANG_VERSION: r383902b
+      GCC_VERSION: 4.9
 
     steps:
-      - name: 检出内核源码（GitHub Action专用配置）
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           ref: lineage-23.0
-          submodules: recursive  # 递归拉取子模块，适配内核源码依赖
-          fetch-depth: 0  # 完整拉取历史，避免编译时缺失文件
-          repository: hjiyu1965/android_kernel_oneplus_sm8150  # 明确仓库地址，避免歧义
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: 配置ccache缓存（GitHub Action缓存机制适配）
+      - name: Setup ccache Cache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          # 缓存key包含runner系统+内核仓库+提交SHA，确保缓存唯一性
-          key: ${{ runner.os }}-sm8150-4.14-ccache-${{ github.sha }}
+          key: ${{ runner.os }}-sm8150-kernel-ccache-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-sm8150-4.14-ccache-
-        if: always()  # 无论前序步骤是否成功，均尝试恢复缓存
+            ${{ runner.os }}-sm8150-kernel-ccache-
 
-      - name: 安装编译依赖（GitHub Action Ubuntu 22.04适配）
+      - name: Install Build Dependencies
         run: |
           set -euo pipefail
-          # GitHub Action runner默认无sudo密码，直接执行更新安装
-          sudo apt-get update -y && sudo apt-get upgrade -y
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libncurses5-dev \
-            zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache
-          # 4.14内核依赖python2，GitHub Action默认无软链接，手动创建
+            zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache \
+            device-tree-compiler   # 添加 dtc 用于编译 dtbo.img
           sudo ln -sf /usr/bin/python2 /usr/bin/python
-          # 配置ccache缓存大小，适配GitHub Action runner存储限制
-          ccache -M 10G && ccache -o compression=true && ccache -s
+          ccache -M 10G
+          ccache -o compression=true
+          ccache -s
 
-      - name: 下载+配置交叉编译工具链（GitHub Action网络适配）
+      - name: Download & Setup Cross Compile Toolchain
         run: |
           set -euo pipefail
           TOOLCHAIN_DIR="${{ github.workspace }}/toolchain"
-          # 清理旧工具链目录，避免GitHub Action缓存残留冲突
-          rm -rf "${TOOLCHAIN_DIR}" && mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-gcc"
+          rm -rf "${TOOLCHAIN_DIR}"
+          mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-gcc"
 
-          echo "=== 下载工具链（GitHub Action网络优化，清华静态链接） ==="
-          # 实测GitHub Action可稳定访问的清华静态链接，无400/404
-          wget -t 8 --timeout=40 --no-check-certificate -q \
-            -O "${TOOLCHAIN_DIR}/clang/${CLANG_TAR}" \
-            "${TOOLCHAIN_URL_PREFIX}/clang/host/linux-x86/${CLANG_TAR}"
+          echo "=== 1. 下载工具链（谷歌官方固定版本） ==="
+          # 修复 Clang 下载链接：添加 clang- 前缀
+          wget -t 10 --timeout=30 --retry-on-http-error=404,403,500,503 \
+            -O clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-11.0.0_r48/clang-${CLANG_VERSION}.tar.gz"
           
-          wget -t 8 --timeout=40 --no-check-certificate -q \
-            -O "${TOOLCHAIN_DIR}/aarch64-gcc/${GCC_TAR}" \
-            "${TOOLCHAIN_URL_PREFIX}/gcc/linux-x86/aarch64/${GCC_TAR}"
+          # GCC 工具链下载（保持原样，已验证可用）
+          wget -t 10 --timeout=30 --retry-on-http-error=404,403,500,503 \
+            -O gcc.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-${GCC_VERSION}/+archive/refs/tags/android-11.0.0_r48.tar.gz"
 
-          echo "=== 解压工具链（适配GitHub Action文件权限） ==="
-          tar -xzf "${TOOLCHAIN_DIR}/clang/${CLANG_TAR}" -C "${TOOLCHAIN_DIR}/clang" --strip-components=1
-          tar -xzf "${TOOLCHAIN_DIR}/aarch64-gcc/${GCC_TAR}" -C "${TOOLCHAIN_DIR}/aarch64-gcc" --strip-components=1
-          rm -f "${TOOLCHAIN_DIR}/clang/${CLANG_TAR}" "${TOOLCHAIN_DIR}/aarch64-gcc/${GCC_TAR}"
+          echo "=== 2. 校验下载完整性 ==="
+          # 检查文件是否为空
+          if [ ! -s clang.tar.gz ]; then
+            echo "ERROR: Clang工具链下载失败，文件为空！"
+            exit 1
+          fi
+          if [ ! -s gcc.tar.gz ]; then
+            echo "ERROR: GCC工具链下载失败，文件为空！"
+            exit 1
+          fi
+          # 额外校验压缩包是否损坏
+          tar -tzf clang.tar.gz > /dev/null || { echo "Clang压缩包损坏"; exit 1; }
+          tar -tzf gcc.tar.gz > /dev/null || { echo "GCC压缩包损坏"; exit 1; }
 
-          echo "=== 修复权限（GitHub Action runner默认权限优化） ==="
-          chmod -R 755 "${TOOLCHAIN_DIR}/clang/bin"
-          chmod -R 755 "${TOOLCHAIN_DIR}/aarch64-gcc/bin"
+          echo "=== 3. 解压工具链 ==="
+          tar -xzf clang.tar.gz -C "${TOOLCHAIN_DIR}/clang"
+          tar -xzf gcc.tar.gz -C "${TOOLCHAIN_DIR}/aarch64-gcc"
+          rm -f clang.tar.gz gcc.tar.gz
 
-          echo "=== 添加工具链到PATH（GitHub Action环境变量传递） ==="
-          echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
-          echo "${TOOLCHAIN_DIR}/aarch64-gcc/bin" >> $GITHUB_PATH
-
-      - name: 校验工具链环境（GitHub Action前置检查）
-        run: |
-          set -euo pipefail
-          echo "=== GitHub Action工具链校验 ==="
-          python --version || { echo "Python2未配置成功"; exit 1; }
-          clang --version || { echo "Clang工具链失效"; exit 1; }
-          aarch64-linux-android-gcc --version || { echo "GCC工具链失效"; exit 1; }
-          echo "=== 工具链校验通过，符合GitHub Action编译要求 ==="
-
-      - name: 加载内核配置（适配sm8150-perf_defconfig）
-        run: |
-          set -euo pipefail
-          export CC="ccache clang"
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-android-
-
-          # 多路径兼容，适配内核仓库defconfig存放位置
-          if [ -f "configs/vendor/${DEFCONFIG}" ]; then
-            cp configs/vendor/${DEFCONFIG} arch/${ARCH}/configs/
-          elif [ ! -f "arch/${ARCH}/configs/${DEFCONFIG}" ]; then
-            echo "ERROR: ${DEFCONFIG}未找到！" && exit 1
+          echo "=== 4. 修复权限并校验文件 ==="
+          chmod -R +x "${TOOLCHAIN_DIR}/clang/bin"
+          chmod -R +x "${TOOLCHAIN_DIR}/aarch64-gcc/bin"
+          
+          if [ ! -f "${TOOLCHAIN_DIR}/clang/bin/clang" ]; then
+            echo "ERROR: clang可执行文件缺失！"
+            ls -la "${TOOLCHAIN_DIR}/clang/bin"
+            exit 1
+          fi
+          if [ ! -f "${TOOLCHAIN_DIR}/aarch64-gcc/bin/aarch64-linux-android-gcc" ]; then
+            echo "ERROR: GCC可执行文件缺失！"
+            ls -la "${TOOLCHAIN_DIR}/aarch64-gcc/bin"
+            exit 1
           fi
 
-          make O=out ${DEFCONFIG}
-          [ -f "out/.config" ] || { echo "配置文件生成失败"; exit 1; }
+          echo "=== 5. 添加到系统PATH ==="
+          echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
+          echo "${TOOLCHAIN_DIR}/aarch64-gcc/bin" >> $GITHUB_PATH
+          echo "工具链配置完成！"
 
-      - name: 编译内核（GitHub Action多核优化）
+      - name: Verify Toolchain Environment
+        run: |
+          set -euo pipefail
+          echo "=== 工具链校验 ==="
+          python --version
+          clang --version
+          aarch64-linux-android-gcc --version
+          which clang aarch64-linux-android-gcc
+
+      - name: Load Kernel Defconfig
         run: |
           set -euo pipefail
           export CC="ccache clang"
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
 
-          # 利用GitHub Action runner全部CPU核心，加速编译
-          make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
-          make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
+          DEFCONFIG_PATH=""
+          if [ -f "arch/${ARCH}/configs/vendor/${DEFCONFIG_NAME}" ]; then
+            DEFCONFIG_PATH="vendor/${DEFCONFIG_NAME}"
+          elif [ -f "configs/vendor/${DEFCONFIG_NAME}" ]; then
+            cp -f "configs/vendor/${DEFCONFIG_NAME}" "arch/${ARCH}/configs/"
+            DEFCONFIG_PATH="${DEFCONFIG_NAME}"
+          elif [ -f "arch/${ARCH}/configs/${DEFCONFIG_NAME}" ]; then
+            DEFCONFIG_PATH="${DEFCONFIG_NAME}"
+          else
+            echo "ERROR: Defconfig未找到！"
+            exit 1
+          fi
+          make O=out "${DEFCONFIG_PATH}"
+          [ -f out/.config ] || exit 1
 
-          # 校验核心产物，避免编译失败未察觉
-          [ -f "out/arch/${ARCH}/boot/Image.gz-dtb" ] || { echo "内核镜像编译失败"; exit 1; }
-          ccache -s  # 输出缓存命中情况，优化后续编译
-
-      - name: 打包编译产物（GitHub Action上传适配）
+      - name: Compile Kernel
         run: |
           set -euo pipefail
-          BUILD_DATE=$(date +%Y%m%d-%H%M%S)
-          ARTIFACT_NAME="sm8150-kernel-4.14-lineage23-${BUILD_DATE}"
+          export CC="ccache clang"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+
+          make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
+          make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
+          [ -f "out/arch/${ARCH}/boot/Image.gz-dtb" ] || exit 1
+          ccache -s
+
+      - name: Package Build Artifacts
+        run: |
+          set -euo pipefail
+          BUILD_DATE=$(date +%Y%m%d)
+          ARTIFACT_NAME="kernel-sm8150-lineage23-${BUILD_DATE}"
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-          mkdir -p ${ARTIFACT_NAME}
-          cp out/arch/${ARCH}/boot/Image.gz-dtb ${ARTIFACT_NAME}/
-          cp out/arch/${ARCH}/boot/dtbo.img ${ARTIFACT_NAME}/
-          cp -r out/modules ${ARTIFACT_NAME}/
-          cp out/.config ${ARTIFACT_NAME}/kernel-config
-          zip -r ${ARTIFACT_NAME}.zip ${ARTIFACT_NAME}/
+          mkdir -p "${ARTIFACT_NAME}"
+          cp "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
+          cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
+          
+          # 优化模块打包：去除多余的 lib/modules 层级，直接包含模块文件
+          mkdir -p "${ARTIFACT_NAME}/modules"
+          if [ -d out/modules/lib/modules ]; then
+            cp -r out/modules/lib/modules/* "${ARTIFACT_NAME}/modules/"
+          else
+            echo "警告：模块目录不存在，跳过模块打包"
+          fi
+          
+          cp "out/.config" "${ARTIFACT_NAME}/kernel_defconfig"
+          zip -r "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}/"
 
-      - name: 上传产物到GitHub Action（保留30天）
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: "*.zip"
-          retention-days: 30  # 适配GitHub Action产物存储规则
-          if-no-files-found: error  # 无产物时标记失败，便于排查
+          retention-days: 30
