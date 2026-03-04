@@ -1,64 +1,134 @@
-name: Build OnePlus SM8150 Kernel 4.14 (Fast Runner)
-
+name: Build OnePlus SM8150 Kernel (4.14)
 on:
+  # 推送至 lineage-23.0 分支时自动触发
   push:
-    branches: [ lineage-23.0 ]
+    branches: [ "lineage-23.0" ]
+  # 支持手动触发编译
   workflow_dispatch:
 
 jobs:
-  build:
-    # 换成ubuntu-latest，Runner资源最多，调度最快
+  build-kernel:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Checkout kernel source
+      - name: 检出内核源码
         uses: actions/checkout@v4
         with:
+          ref: lineage-23.0
           submodules: recursive
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: 一键安装依赖+适配4.14的交叉编译工具链
-        run: |
-          set -euo pipefail
-          sudo apt update -y
-          # Ubuntu 22.04官方源自带的交叉编译GCC，完美向下兼容4.14内核，无需额外下载
-          sudo apt install -y \
-            git make bc bison flex libssl-dev libncurses-dev \
-            build-essential zip lz4 zstd libelf-dev device-tree-compiler \
-            python3 python3-pip gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: 配置 ccache 编译缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-sm8150-kernel-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-sm8150-kernel-ccache-
 
-      - name: 内核编译（纯GCC，零兼容问题）
+      - name: 安装编译依赖
         run: |
-          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libncurses5-dev \
+            zip unzip curl wget git python3 python2 libelf-dev kmod cpio ccache
+          # 适配4.14内核旧脚本，设置python2为默认python
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
+          # 配置ccache
+          ccache -M 10G
+          ccache -o compression=true
+
+      - name: 下载安卓交叉编译工具链
+        run: |
+          # 适配LineageOS 23.0/Android 13的clang工具链，兼容4.14内核
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r1/clang-r416183b.tar.gz
+          mkdir -p toolchain/clang
+          tar -xzf clang-r416183b.tar.gz -C toolchain/clang
+
+          # 64位gcc兼容工具链
+          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-13.0.0_r1.tar.gz
+          mkdir -p toolchain/aarch64-linux-android-4.9
+          tar -xzf android-13.0.0_r1.tar.gz -C toolchain/aarch64-linux-android-4.9
+
+          # 32位gcc兼容工具链
+          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-13.0.0_r1.tar.gz
+          mkdir -p toolchain/arm-linux-androideabi-4.9
+          tar -xzf android-13.0.0_r1.tar.gz -C toolchain/arm-linux-androideabi-4.9
+
+          # 工具链加入系统PATH
+          echo "$GITHUB_WORKSPACE/toolchain/clang/bin" >> $GITHUB_PATH
+          echo "$GITHUB_WORKSPACE/toolchain/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
+          echo "$GITHUB_WORKSPACE/toolchain/arm-linux-androideabi-4.9/bin" >> $GITHUB_PATH
+
+      - name: 验证工具链环境
+        run: |
+          echo "Python版本: $(python --version)"
+          echo "Clang版本: $(clang --version)"
+          echo "aarch64编译器版本: $(aarch64-linux-android-gcc --version)"
+          echo "ccache版本: $(ccache --version)"
+
+      - name: 加载内核defconfig配置
+        run: |
+          # 核心环境变量
           export ARCH=arm64
           export SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=aarch64-linux-gnu-gcc
-          export LD=aarch64-linux-gnu-ld
-          export AR=aarch64-linux-gnu-ar
-          export NM=aarch64-linux-gnu-nm
-          export OBJCOPY=aarch64-linux-gnu-objcopy
-          export OBJDUMP=aarch64-linux-gnu-objdump
-          export STRIP=aarch64-linux-gnu-strip
+          export CC="ccache clang"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export KBUILD_BUILD_USER=builder
+          export KBUILD_BUILD_HOST=github-action
+          export DEFCONFIG=sm8150-perf_defconfig
 
-          make O=out vendor/sm8150-perf_defconfig
-          make O=out -j$(nproc)
+          # 兼容你指定的configs/vendor路径，自动复制defconfig到标准目录
+          if [ -f configs/vendor/${DEFCONFIG} ]; then
+            cp configs/vendor/${DEFCONFIG} arch/arm64/configs/
+            echo "已复制defconfig到arch/arm64/configs目录"
+          elif [ -f arch/arm64/configs/vendor/${DEFCONFIG} ]; then
+            export DEFCONFIG=vendor/${DEFCONFIG}
+            echo "已识别vendor子目录defconfig"
+          fi
 
-      - name: 打包AnyKernel3刷入包
+          # 生成编译配置
+          make O=out ${DEFCONFIG}
+
+      - name: 编译内核
         run: |
-          set -euo pipefail
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-          # 兼容一加SM8150的两种常见内核镜像格式
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ || \
-          cp out/arch/arm64/boot/Image AnyKernel3/
-          cp -r out/arch/arm64/boot/dts/qcom/* AnyKernel3/dtb/ 2>/dev/null || true
+          # 复用环境变量
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC="ccache clang"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export KBUILD_BUILD_USER=builder
+          export KBUILD_BUILD_HOST=github-action
+
+          # 全量编译，自动使用runner最大核心数
+          make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
+          # 安装并剥离内核模块
+          make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
+
+      - name: 打包编译产物
+        run: |
+          BUILD_DATE=$(date +%Y%m%d)
+          ARTIFACT_NAME=kernel-sm8150-lineage23-${BUILD_DATE}
           
-          cd AnyKernel3
-          zip -r9 OnePlus-SM8150-Kernel.zip * -x .git README.md
-          cd ..
+          # 整理产物
+          mkdir -p ${ARTIFACT_NAME}
+          cp out/arch/arm64/boot/Image.gz-dtb ${ARTIFACT_NAME}/
+          cp out/arch/arm64/boot/dtbo.img ${ARTIFACT_NAME}/
+          cp -r out/modules ${ARTIFACT_NAME}/
+          cp out/.config ${ARTIFACT_NAME}/kernel_defconfig
+          
+          # 打包成zip
+          zip -r ${ARTIFACT_NAME}.zip ${ARTIFACT_NAME}/
+          echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus-SM8150-Kernel-4.14
-          path: AnyKernel3/OnePlus-SM8150-Kernel.zip
+          name: ${{ env.ARTIFACT_NAME }}
+          path: *.zip
           retention-days: 30
