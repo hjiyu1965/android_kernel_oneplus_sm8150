@@ -15,7 +15,6 @@ jobs:
       KBUILD_BUILD_USER: builder
       KBUILD_BUILD_HOST: github-action
       DEFCONFIG_NAME: sm8150-perf_defconfig
-      # 4.14内核兼容的固定工具链版本
       CLANG_VERSION: r383902b
       GCC_VERSION: 4.9
 
@@ -42,7 +41,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libncurses5-dev \
             zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache \
-            device-tree-compiler   # 添加 dtc 用于编译 dtbo.img
+            device-tree-compiler
           sudo ln -sf /usr/bin/python2 /usr/bin/python
           ccache -M 10G
           ccache -o compression=true
@@ -55,19 +54,17 @@ jobs:
           rm -rf "${TOOLCHAIN_DIR}"
           mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-gcc"
 
-          echo "=== 1. 下载工具链（谷歌官方固定版本） ==="
-          # 修复 Clang 下载链接：添加 clang- 前缀
+          echo "=== 1. 下载 Clang 工具链（AOSP 官方） ==="
           wget -t 10 --timeout=30 --retry-on-http-error=404,403,500,503 \
             -O clang.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-11.0.0_r48/clang-${CLANG_VERSION}.tar.gz"
-          
-          # GCC 工具链下载（保持原样，已验证可用）
+
+          echo "=== 2. 下载 GCC binutils 工具链（AOSP 官方，不含 gcc 但包含 ld 等） ==="
           wget -t 10 --timeout=30 --retry-on-http-error=404,403,500,503 \
             -O gcc.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-${GCC_VERSION}/+archive/refs/tags/android-11.0.0_r48.tar.gz"
 
-          echo "=== 2. 校验下载完整性 ==="
-          # 检查文件是否为空
+          echo "=== 3. 校验下载完整性 ==="
           if [ ! -s clang.tar.gz ]; then
             echo "ERROR: Clang工具链下载失败，文件为空！"
             exit 1
@@ -76,31 +73,31 @@ jobs:
             echo "ERROR: GCC工具链下载失败，文件为空！"
             exit 1
           fi
-          # 额外校验压缩包是否损坏
           tar -tzf clang.tar.gz > /dev/null || { echo "Clang压缩包损坏"; exit 1; }
           tar -tzf gcc.tar.gz > /dev/null || { echo "GCC压缩包损坏"; exit 1; }
 
-          echo "=== 3. 解压工具链 ==="
+          echo "=== 4. 解压工具链 ==="
           tar -xzf clang.tar.gz -C "${TOOLCHAIN_DIR}/clang"
           tar -xzf gcc.tar.gz -C "${TOOLCHAIN_DIR}/aarch64-gcc"
           rm -f clang.tar.gz gcc.tar.gz
 
-          echo "=== 4. 修复权限并校验文件 ==="
+          echo "=== 5. 修复权限 ==="
           chmod -R +x "${TOOLCHAIN_DIR}/clang/bin"
           chmod -R +x "${TOOLCHAIN_DIR}/aarch64-gcc/bin"
           
+          # 重要：只检查必需的 binutils 工具（如 ld），不再要求 gcc
           if [ ! -f "${TOOLCHAIN_DIR}/clang/bin/clang" ]; then
             echo "ERROR: clang可执行文件缺失！"
             ls -la "${TOOLCHAIN_DIR}/clang/bin"
             exit 1
           fi
-          if [ ! -f "${TOOLCHAIN_DIR}/aarch64-gcc/bin/aarch64-linux-android-gcc" ]; then
-            echo "ERROR: GCC可执行文件缺失！"
+          if [ ! -f "${TOOLCHAIN_DIR}/aarch64-gcc/bin/aarch64-linux-android-ld" ]; then
+            echo "ERROR: GCC binutils (ld) 缺失！"
             ls -la "${TOOLCHAIN_DIR}/aarch64-gcc/bin"
             exit 1
           fi
 
-          echo "=== 5. 添加到系统PATH ==="
+          echo "=== 6. 添加到系统PATH ==="
           echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
           echo "${TOOLCHAIN_DIR}/aarch64-gcc/bin" >> $GITHUB_PATH
           echo "工具链配置完成！"
@@ -111,8 +108,8 @@ jobs:
           echo "=== 工具链校验 ==="
           python --version
           clang --version
-          aarch64-linux-android-gcc --version
-          which clang aarch64-linux-android-gcc
+          aarch64-linux-android-ld --version   # 只验证 ld
+          which clang aarch64-linux-android-ld
 
       - name: Load Kernel Defconfig
         run: |
@@ -159,7 +156,6 @@ jobs:
           cp "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
           cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
           
-          # 优化模块打包：去除多余的 lib/modules 层级，直接包含模块文件
           mkdir -p "${ARTIFACT_NAME}/modules"
           if [ -d out/modules/lib/modules ]; then
             cp -r out/modules/lib/modules/* "${ARTIFACT_NAME}/modules/"
