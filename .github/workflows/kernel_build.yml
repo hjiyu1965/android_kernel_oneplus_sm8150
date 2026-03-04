@@ -15,7 +15,6 @@ jobs:
       KBUILD_BUILD_USER: builder
       KBUILD_BUILD_HOST: github-action
       DEFCONFIG_NAME: sm8150-perf_defconfig
-      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
       CLANG_VERSION: clang-r416183b
       ANDROID_TAG: android-13.0.0_r1
 
@@ -42,46 +41,40 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libncurses5-dev \
             zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache
-          # 适配4.14内核，设置python2为默认python
           sudo ln -sf /usr/bin/python2 /usr/bin/python
-          # 配置ccache编译缓存
           ccache -M 10G
           ccache -o compression=true
           ccache -s
 
-      - name: Download & Setup Cross Compile Toolchain
+      - name: Download & Setup Toolchain
         run: |
           set -euo pipefail
+          TOOLCHAIN_DIR="${{ github.workspace }}/toolchain"
           mkdir -p ${TOOLCHAIN_DIR}/clang ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9 ${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9
 
-          # 下载Clang工具链
-          wget -q -O clang.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${ANDROID_TAG}/${CLANG_VERSION}.tar.gz
+          wget -q -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${ANDROID_TAG}/${CLANG_VERSION}.tar.gz"
           tar -xzf clang.tar.gz -C ${TOOLCHAIN_DIR}/clang
           rm -f clang.tar.gz
 
-          # 下载aarch64 GCC工具链
-          wget -q -O aarch64-gcc.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz
+          wget -q -O aarch64-gcc.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
           tar -xzf aarch64-gcc.tar.gz -C ${TOOLCHAIN_DIR}/aarch64-linux-android-4.9
           rm -f aarch64-gcc.tar.gz
 
-          # 下载arm32 GCC工具链
-          wget -q -O arm32-gcc.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz
+          wget -q -O arm32-gcc.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
           tar -xzf arm32-gcc.tar.gz -C ${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9
           rm -f arm32-gcc.tar.gz
 
-          # 工具链加入系统PATH，后续步骤可直接调用
           echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
           echo "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
           echo "${TOOLCHAIN_DIR}/arm-linux-androideabi-4.9/bin" >> $GITHUB_PATH
 
-      - name: Verify Toolchain Environment
+      - name: Verify Toolchain
         run: |
           set -euo pipefail
-          echo "=== Toolchain Verification ==="
+          echo "=== Toolchain Check ==="
           python --version
           clang --version
           aarch64-linux-android-gcc --version
-          ccache --version
           which clang aarch64-linux-android-gcc arm-linux-androideabi-gcc
 
       - name: Load Kernel Defconfig
@@ -92,7 +85,6 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-          # 多路径兼容defconfig，按优先级查找
           DEFCONFIG_PATH=""
           if [ -f "arch/${ARCH}/configs/vendor/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="vendor/${DEFCONFIG_NAME}"
@@ -102,16 +94,14 @@ jobs:
           elif [ -f "arch/${ARCH}/configs/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="${DEFCONFIG_NAME}"
           else
-            echo "ERROR: Defconfig ${DEFCONFIG_NAME} not found in any supported path!"
+            echo "ERROR: Defconfig ${DEFCONFIG_NAME} not found!"
             exit 1
           fi
 
-          echo "Found defconfig at: arch/${ARCH}/configs/${DEFCONFIG_PATH}"
-          # 生成编译配置
+          echo "Use defconfig: ${DEFCONFIG_PATH}"
           make O=out ${DEFCONFIG_PATH}
-          # 校验配置生成成功
           if [ ! -f out/.config ]; then
-            echo "ERROR: Failed to generate kernel .config file!"
+            echo "ERROR: .config generate failed!"
             exit 1
           fi
 
@@ -123,41 +113,30 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-          # 全量编译内核
           make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
-          # 安装并剥离内核模块
           make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
 
-          # 校验核心编译产物
           if [ ! -f out/arch/${ARCH}/boot/Image.gz-dtb ]; then
-            echo "ERROR: Kernel Image.gz-dtb not built successfully!"
-            exit 1
-          fi
-          if [ ! -f out/arch/${ARCH}/boot/dtbo.img ]; then
-            echo "ERROR: dtbo.img not built successfully!"
+            echo "ERROR: Kernel build failed!"
             exit 1
           fi
           ccache -s
 
-      - name: Package Build Artifacts
+      - name: Package Artifacts
         run: |
           set -euo pipefail
           BUILD_DATE=$(date +%Y%m%d)
           ARTIFACT_NAME=kernel-sm8150-lineage23-${BUILD_DATE}
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-          # 整理编译产物
           mkdir -p ${ARTIFACT_NAME}
-          cp -v out/arch/${ARCH}/boot/Image.gz-dtb ${ARTIFACT_NAME}/
-          cp -v out/arch/${ARCH}/boot/dtbo.img ${ARTIFACT_NAME}/
-          cp -vr out/modules ${ARTIFACT_NAME}/
-          cp -v out/.config ${ARTIFACT_NAME}/kernel_defconfig
-          cp -v Makefile ${ARTIFACT_NAME}/
-
-          # 打包为zip
+          cp out/arch/${ARCH}/boot/Image.gz-dtb ${ARTIFACT_NAME}/
+          cp out/arch/${ARCH}/boot/dtbo.img ${ARTIFACT_NAME}/
+          cp -r out/modules ${ARTIFACT_NAME}/
+          cp out/.config ${ARTIFACT_NAME}/kernel_defconfig
           zip -r ${ARTIFACT_NAME}.zip ${ARTIFACT_NAME}/
 
-      - name: Upload Build Artifacts
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
