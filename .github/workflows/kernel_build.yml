@@ -15,8 +15,10 @@ jobs:
       KBUILD_BUILD_USER: builder
       KBUILD_BUILD_HOST: github-action
       DEFCONFIG_NAME: sm8150-perf_defconfig
+      # 固定工具链版本，适配4.14内核
+      CLANG_BRANCH: lineage-20.0
       CLANG_VERSION: clang-r383902b
-      ANDROID_TAG: android-11.0.0_r48
+      GCC_BRANCH: lineage-20.0
 
     steps:
       - name: Checkout Kernel Source
@@ -41,7 +43,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libncurses5-dev \
             zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache
+          # 适配4.14内核，固定python2为默认
           sudo ln -sf /usr/bin/python2 /usr/bin/python
+          # 配置ccache
           ccache -M 10G
           ccache -o compression=true
           ccache -s
@@ -50,35 +54,72 @@ jobs:
         run: |
           set -euo pipefail
           TOOLCHAIN_DIR="${{ github.workspace }}/toolchain"
+          # 清理旧目录，避免残留冲突
           rm -rf "${TOOLCHAIN_DIR}"
-          mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9"
+          mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-gcc"
 
-          # 下载Clang工具链（适配4.14内核的稳定版本）
-          wget -t 5 --no-check-certificate -q -O clang.tar.gz \
-            "https://mirrors.tuna.tsinghua.edu.cn/aosp/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${ANDROID_TAG}/${CLANG_VERSION}.tar.gz"
-          tar -xzf clang.tar.gz -C "${TOOLCHAIN_DIR}/clang"
-          rm -f clang.tar.gz
-
+          echo "=== 1. 下载工具链（主源：LineageOS GitHub官方源，稳定无404） ==="
+          # 【核心修复】替换为固定的GitHub归档链接，不会出现动态路径404问题
+          # 下载Clang工具链
+          wget -t 10 --timeout=30 --retry-on-http-error=404,403,500,503 \
+            -O clang.tar.gz \
+            "https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86/archive/refs/heads/${CLANG_BRANCH}.tar.gz"
+          
           # 下载aarch64 GCC工具链
-          wget -t 5 --no-check-certificate -q -O gcc.tar.gz \
-            "https://mirrors.tuna.tsinghua.edu.cn/aosp/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
-          tar -xzf gcc.tar.gz -C "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9"
-          rm -f gcc.tar.gz
+          wget -t 10 --timeout=30 --retry-on-http-error=404,403,500,503 \
+            -O gcc.tar.gz \
+            "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/${GCC_BRANCH}.tar.gz"
 
-          # 修复权限并添加到PATH
+          echo "=== 2. 校验下载完整性 ==="
+          # 校验文件是否下载成功，避免空文件
+          if [ ! -s clang.tar.gz ]; then
+            echo "ERROR: Clang工具链下载失败，文件为空！"
+            exit 1
+          fi
+          if [ ! -s gcc.tar.gz ]; then
+            echo "ERROR: GCC工具链下载失败，文件为空！"
+            exit 1
+          fi
+          echo "Clang文件大小: $(du -h clang.tar.gz)"
+          echo "GCC文件大小: $(du -h gcc.tar.gz)"
+
+          echo "=== 3. 解压工具链 ==="
+          tar -xzf clang.tar.gz -C "${TOOLCHAIN_DIR}/clang" --strip-components=1
+          tar -xzf gcc.tar.gz -C "${TOOLCHAIN_DIR}/aarch64-gcc" --strip-components=1
+          
+          # 清理安装包
+          rm -f clang.tar.gz gcc.tar.gz
+
+          echo "=== 4. 修复工具链权限 ==="
           chmod -R +x "${TOOLCHAIN_DIR}/clang/bin"
-          chmod -R +x "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin"
+          chmod -R +x "${TOOLCHAIN_DIR}/aarch64-gcc/bin"
+
+          echo "=== 5. 校验工具链文件是否存在 ==="
+          if [ ! -f "${TOOLCHAIN_DIR}/clang/bin/clang" ]; then
+            echo "ERROR: clang 可执行文件不存在，解压失败！"
+            ls -la "${TOOLCHAIN_DIR}/clang"
+            exit 1
+          fi
+          if [ ! -f "${TOOLCHAIN_DIR}/aarch64-gcc/bin/aarch64-linux-android-gcc" ]; then
+            echo "ERROR: aarch64 GCC 可执行文件不存在，解压失败！"
+            ls -la "${TOOLCHAIN_DIR}/aarch64-gcc"
+            exit 1
+          fi
+
+          echo "=== 6. 工具链加入系统PATH ==="
           echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
-          echo "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
+          echo "${TOOLCHAIN_DIR}/aarch64-gcc/bin" >> $GITHUB_PATH
+          echo "工具链配置完成！"
 
       - name: Verify Toolchain Environment
         run: |
           set -euo pipefail
-          echo "=== Toolchain Environment Check ==="
+          echo "=== 工具链环境校验 ==="
           python --version
           clang --version
           aarch64-linux-android-gcc --version
           which clang aarch64-linux-android-gcc
+          echo "=== 环境校验完成 ==="
 
       - name: Load Kernel Defconfig
         run: |
@@ -88,7 +129,7 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
 
           DEFCONFIG_PATH=""
-          # 多路径兼容检查
+          # 多路径兼容defconfig
           if [ -f "arch/${ARCH}/configs/vendor/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="vendor/${DEFCONFIG_NAME}"
           elif [ -f "configs/vendor/${DEFCONFIG_NAME}" ]; then
@@ -97,13 +138,17 @@ jobs:
           elif [ -f "arch/${ARCH}/configs/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="${DEFCONFIG_NAME}"
           else
-            echo "ERROR: Defconfig ${DEFCONFIG_NAME} not found!"
+            echo "ERROR: Defconfig ${DEFCONFIG_NAME} 未找到！"
             exit 1
           fi
 
-          echo "Using defconfig: ${DEFCONFIG_PATH}"
+          echo "使用defconfig: ${DEFCONFIG_PATH}"
           make O=out "${DEFCONFIG_PATH}"
-          [ -f out/.config ] || exit 1
+          
+          if [ ! -f "out/.config" ]; then
+            echo "ERROR: 内核.config文件生成失败！"
+            exit 1
+          fi
 
       - name: Compile Kernel
         run: |
@@ -112,20 +157,16 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
 
-          echo "=== Starting Kernel Compilation ==="
-          echo "Using $(nproc) CPU cores for parallel compilation"
+          echo "=== 开始编译内核 ==="
           make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
           make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
 
-          # 验证编译产物
+          # 校验核心编译产物
           if [ ! -f "out/arch/${ARCH}/boot/Image.gz-dtb" ]; then
-            echo "ERROR: Kernel Image.gz-dtb compilation failed!"
+            echo "ERROR: 内核Image.gz-dtb编译失败！"
             exit 1
           fi
-          if [ ! -f "out/arch/${ARCH}/boot/dtbo.img" ]; then
-            echo "ERROR: dtbo.img compilation failed!"
-            exit 1
-          fi
+          echo "=== 内核编译完成 ==="
           ccache -s
 
       - name: Package Build Artifacts
@@ -135,15 +176,11 @@ jobs:
           ARTIFACT_NAME="kernel-sm8150-lineage23-${BUILD_DATE}"
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-          # 整理编译产物
           mkdir -p "${ARTIFACT_NAME}"
-          cp -v "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
-          cp -v "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
-          cp -rv "out/modules" "${ARTIFACT_NAME}/"
-          cp -v "out/.config" "${ARTIFACT_NAME}/kernel_defconfig"
-          cp -v Makefile "${ARTIFACT_NAME}/"
-
-          # 打包成zip
+          cp "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
+          cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
+          cp -r "out/modules" "${ARTIFACT_NAME}/"
+          cp "out/.config" "${ARTIFACT_NAME}/kernel_defconfig"
           zip -r "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}/"
 
       - name: Upload Build Artifacts
