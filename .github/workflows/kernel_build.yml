@@ -22,7 +22,7 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          ref: "lineage-23.0"
+          ref: lineage-23.0
           submodules: recursive
           fetch-depth: 0
 
@@ -53,34 +53,21 @@ jobs:
           rm -rf "${TOOLCHAIN_DIR}"
           mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9"
 
-          echo "=== Start Download Toolchain ==="
+          # 下载Clang工具链（适配4.14内核的稳定版本）
           wget -t 5 --no-check-certificate -q -O clang.tar.gz \
             "https://mirrors.tuna.tsinghua.edu.cn/aosp/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${ANDROID_TAG}/${CLANG_VERSION}.tar.gz"
-          
-          wget -t 5 --no-check-certificate -q -O aarch64-gcc.tar.gz \
-            "https://mirrors.tuna.tsinghua.edu.cn/aosp/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
-
-          echo "=== Extract Toolchain ==="
           tar -xzf clang.tar.gz -C "${TOOLCHAIN_DIR}/clang"
-          tar -xzf aarch64-gcc.tar.gz -C "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9"
-          
-          rm -f clang.tar.gz aarch64-gcc.tar.gz
+          rm -f clang.tar.gz
 
-          echo "=== Fix Toolchain Permissions ==="
+          # 下载aarch64 GCC工具链
+          wget -t 5 --no-check-certificate -q -O gcc.tar.gz \
+            "https://mirrors.tuna.tsinghua.edu.cn/aosp/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${ANDROID_TAG}.tar.gz"
+          tar -xzf gcc.tar.gz -C "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9"
+          rm -f gcc.tar.gz
+
+          # 修复权限并添加到PATH
           chmod -R +x "${TOOLCHAIN_DIR}/clang/bin"
           chmod -R +x "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin"
-
-          echo "=== Verify Toolchain Files ==="
-          if [ ! -f "${TOOLCHAIN_DIR}/clang/bin/clang" ]; then
-            echo "ERROR: clang binary not found!"
-            exit 1
-          fi
-          if [ ! -f "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc" ]; then
-            echo "ERROR: aarch64 GCC binary not found!"
-            exit 1
-          fi
-
-          echo "=== Add Toolchain to PATH ==="
           echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
           echo "${TOOLCHAIN_DIR}/aarch64-linux-android-4.9/bin" >> $GITHUB_PATH
 
@@ -92,7 +79,6 @@ jobs:
           clang --version
           aarch64-linux-android-gcc --version
           which clang aarch64-linux-android-gcc
-          echo "=== Check Complete ==="
 
       - name: Load Kernel Defconfig
         run: |
@@ -102,6 +88,7 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
 
           DEFCONFIG_PATH=""
+          # 多路径兼容检查
           if [ -f "arch/${ARCH}/configs/vendor/${DEFCONFIG_NAME}" ]; then
             DEFCONFIG_PATH="vendor/${DEFCONFIG_NAME}"
           elif [ -f "configs/vendor/${DEFCONFIG_NAME}" ]; then
@@ -116,11 +103,7 @@ jobs:
 
           echo "Using defconfig: ${DEFCONFIG_PATH}"
           make O=out "${DEFCONFIG_PATH}"
-          
-          if [ ! -f "out/.config" ]; then
-            echo "ERROR: Kernel .config generate failed!"
-            exit 1
-          fi
+          [ -f out/.config ] || exit 1
 
       - name: Compile Kernel
         run: |
@@ -129,15 +112,20 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
 
-          echo "=== Start Kernel Compile ==="
+          echo "=== Starting Kernel Compilation ==="
+          echo "Using $(nproc) CPU cores for parallel compilation"
           make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
           make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
 
+          # 验证编译产物
           if [ ! -f "out/arch/${ARCH}/boot/Image.gz-dtb" ]; then
-            echo "ERROR: Kernel Image.gz-dtb build failed!"
+            echo "ERROR: Kernel Image.gz-dtb compilation failed!"
             exit 1
           fi
-          echo "=== Compile Complete ==="
+          if [ ! -f "out/arch/${ARCH}/boot/dtbo.img" ]; then
+            echo "ERROR: dtbo.img compilation failed!"
+            exit 1
+          fi
           ccache -s
 
       - name: Package Build Artifacts
@@ -147,11 +135,15 @@ jobs:
           ARTIFACT_NAME="kernel-sm8150-lineage23-${BUILD_DATE}"
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
+          # 整理编译产物
           mkdir -p "${ARTIFACT_NAME}"
-          cp "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
-          cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
-          cp -r "out/modules" "${ARTIFACT_NAME}/"
-          cp "out/.config" "${ARTIFACT_NAME}/kernel_defconfig"
+          cp -v "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
+          cp -v "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
+          cp -rv "out/modules" "${ARTIFACT_NAME}/"
+          cp -v "out/.config" "${ARTIFACT_NAME}/kernel_defconfig"
+          cp -v Makefile "${ARTIFACT_NAME}/"
+
+          # 打包成zip
           zip -r "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}/"
 
       - name: Upload Build Artifacts
