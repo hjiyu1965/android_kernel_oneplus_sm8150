@@ -151,8 +151,13 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
 
-          make -j$(nproc) O=out Image.gz-dtb dtbo.img modules
+          # 编译内核镜像和模块（移除了 dtbo.img 目标，因为当前内核 Makefile 可能不支持）
+          make -j$(nproc) O=out Image.gz-dtb modules
           make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
+
+          # 可选：编译设备树文件（dtbs），为可能的后续手动打包 dtbo.img 做准备
+          make -j$(nproc) O=out dtbs || echo "警告：dtbs 目标不存在，跳过设备树编译"
+
           [ -f "out/arch/${ARCH}/boot/Image.gz-dtb" ] || exit 1
           ccache -s
 
@@ -165,15 +170,21 @@ jobs:
 
           mkdir -p "${ARTIFACT_NAME}"
           cp "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
-          cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
-          
+
+          # 尝试复制 dtbo.img，如果不存在则跳过（可能不需要或尚未生成）
+          if [ -f "out/arch/${ARCH}/boot/dtbo.img" ]; then
+            cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
+          else
+            echo "警告：dtbo.img 未生成，跳过复制。如果您的设备需要 dtbo.img，请检查内核构建系统。"
+          fi
+
           mkdir -p "${ARTIFACT_NAME}/modules"
           if [ -d out/modules/lib/modules ]; then
             cp -r out/modules/lib/modules/* "${ARTIFACT_NAME}/modules/"
           else
             echo "警告：模块目录不存在，跳过模块打包"
           fi
-          
+
           cp "out/.config" "${ARTIFACT_NAME}/kernel_defconfig"
           zip -r "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}/"
 
