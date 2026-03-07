@@ -16,7 +16,6 @@ jobs:
       KBUILD_BUILD_HOST: github-action
       DEFCONFIG_NAME: sm8150-perf_defconfig
       CLANG_VERSION: r383902b
-      # GCC_VERSION 不再需要
 
     steps:
       - name: Checkout Kernel Source
@@ -42,7 +41,6 @@ jobs:
             build-essential bc bison flex libssl-dev libncurses5-dev \
             zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache \
             device-tree-compiler \
-            # 添加系统级交叉编译工具链（GCC 11+）
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
           sudo ln -sf /usr/bin/python2 /usr/bin/python
           ccache -M 10G
@@ -91,7 +89,6 @@ jobs:
           echo "=== 工具链校验 ==="
           python --version
           clang --version
-          # 使用系统安装的 GCC 交叉编译器
           aarch64-linux-gnu-gcc --version
           which clang aarch64-linux-gnu-gcc
 
@@ -100,7 +97,6 @@ jobs:
           set -euo pipefail
           export CC="ccache clang"
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          # 使用系统 GCC 交叉编译器前缀
           export CROSS_COMPILE=aarch64-linux-gnu-
 
           DEFCONFIG_PATH=""
