@@ -16,7 +16,7 @@ jobs:
       KBUILD_BUILD_HOST: github-action
       DEFCONFIG_NAME: sm8150-perf_defconfig
       CLANG_VERSION: r383902b
-      GCC_VERSION: 4.9
+      # GCC_VERSION 不再需要
 
     steps:
       - name: Checkout Kernel Source
@@ -41,76 +41,48 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libncurses5-dev \
             zip unzip curl wget git python2 python3 libelf-dev kmod cpio ccache \
-            device-tree-compiler
+            device-tree-compiler \
+            # 添加系统级交叉编译工具链（GCC 11+）
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
           sudo ln -sf /usr/bin/python2 /usr/bin/python
           ccache -M 10G
           ccache -o compression=true
           ccache -s
 
-      - name: Download & Setup Cross Compile Toolchain
+      - name: Download Clang Toolchain
         run: |
           set -euo pipefail
           TOOLCHAIN_DIR="${{ github.workspace }}/toolchain"
           rm -rf "${TOOLCHAIN_DIR}"
-          mkdir -p "${TOOLCHAIN_DIR}/clang" "${TOOLCHAIN_DIR}/aarch64-gcc"
+          mkdir -p "${TOOLCHAIN_DIR}/clang"
 
-          echo "=== 1. 下载 Clang 工具链（AOSP 官方） ==="
+          echo "=== 下载 Clang 工具链（AOSP 官方） ==="
           wget -t 10 --timeout=30 --retry-on-http-error=404,403,500,503 \
             -O clang.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-11.0.0_r48/clang-${CLANG_VERSION}.tar.gz"
 
-          echo "=== 2. 下载 GCC 工具链（LineageOS 完整版，包含 gcc） ==="
-          wget -t 10 --timeout=30 --retry-on-http-error=404,403,500,503 \
-            -O gcc.tar.gz \
-            "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-18.1.tar.gz"
-
-          echo "=== 3. 校验下载完整性 ==="
+          echo "=== 校验下载完整性 ==="
           if [ ! -s clang.tar.gz ]; then
             echo "ERROR: Clang工具链下载失败，文件为空！"
             exit 1
           fi
-          if [ ! -s gcc.tar.gz ]; then
-            echo "ERROR: GCC工具链下载失败，文件为空！"
-            exit 1
-          fi
           tar -tzf clang.tar.gz > /dev/null || { echo "Clang压缩包损坏"; exit 1; }
-          tar -tzf gcc.tar.gz > /dev/null || { echo "GCC压缩包损坏"; exit 1; }
 
-          echo "=== 4. 解压工具链 ==="
+          echo "=== 解压工具链 ==="
           tar -xzf clang.tar.gz -C "${TOOLCHAIN_DIR}/clang"
-          # LineageOS 的 tar 包包含顶层目录，需将其内容移出
-          mkdir -p "${TOOLCHAIN_DIR}/gcc-tmp"
-          tar -xzf gcc.tar.gz -C "${TOOLCHAIN_DIR}/gcc-tmp"
-          # 查找实际的内容目录
-          GCC_SRC_DIR=$(find "${TOOLCHAIN_DIR}/gcc-tmp" -maxdepth 1 -type d -name "android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-*" | head -n1)
-          if [ -z "$GCC_SRC_DIR" ]; then
-            echo "ERROR: 无法找到 GCC 解压后的源目录"
-            exit 1
-          fi
-          # 修改点：将整个源目录内容（包括 libexec 等）移动到目标目录，而非仅移动部分子目录
-          mv "${GCC_SRC_DIR}"/* "${TOOLCHAIN_DIR}/aarch64-gcc/"
-          rm -rf "${TOOLCHAIN_DIR}/gcc-tmp"
-          rm -f clang.tar.gz gcc.tar.gz
+          rm -f clang.tar.gz
 
-          echo "=== 5. 修复权限 ==="
+          echo "=== 修复权限 ==="
           chmod -R +x "${TOOLCHAIN_DIR}/clang/bin"
-          chmod -R +x "${TOOLCHAIN_DIR}/aarch64-gcc/bin"
 
-          # 检查必要的可执行文件
           if [ ! -f "${TOOLCHAIN_DIR}/clang/bin/clang" ]; then
             echo "ERROR: clang可执行文件缺失！"
             ls -la "${TOOLCHAIN_DIR}/clang/bin"
             exit 1
           fi
-          if [ ! -f "${TOOLCHAIN_DIR}/aarch64-gcc/bin/aarch64-linux-android-gcc" ]; then
-            echo "ERROR: GCC (gcc) 缺失！"
-            ls -la "${TOOLCHAIN_DIR}/aarch64-gcc/bin"
-            exit 1
-          fi
 
-          echo "=== 6. 添加到系统PATH ==="
+          echo "=== 添加到系统PATH ==="
           echo "${TOOLCHAIN_DIR}/clang/bin" >> $GITHUB_PATH
-          echo "${TOOLCHAIN_DIR}/aarch64-gcc/bin" >> $GITHUB_PATH
           echo "工具链配置完成！"
 
       - name: Verify Toolchain Environment
@@ -119,15 +91,17 @@ jobs:
           echo "=== 工具链校验 ==="
           python --version
           clang --version
-          aarch64-linux-android-gcc --version
-          which clang aarch64-linux-android-gcc
+          # 使用系统安装的 GCC 交叉编译器
+          aarch64-linux-gnu-gcc --version
+          which clang aarch64-linux-gnu-gcc
 
       - name: Load Kernel Defconfig
         run: |
           set -euo pipefail
           export CC="ccache clang"
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-android-
+          # 使用系统 GCC 交叉编译器前缀
+          export CROSS_COMPILE=aarch64-linux-gnu-
 
           DEFCONFIG_PATH=""
           if [ -f "arch/${ARCH}/configs/vendor/${DEFCONFIG_NAME}" ]; then
@@ -149,15 +123,12 @@ jobs:
           set -euo pipefail
           export CC="ccache clang"
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE=aarch64-linux-gnu-
 
-          # 编译内核镜像和模块（移除了 dtbo.img 目标，因为当前内核 Makefile 可能不支持）
           make -j$(nproc) O=out Image.gz-dtb modules
           make -j$(nproc) O=out modules_install INSTALL_MOD_PATH=out/modules INSTALL_MOD_STRIP=1
-
-          # 可选：编译设备树文件（dtbs），为可能的后续手动打包 dtbo.img 做准备
+          # 可选编译设备树文件（以备将来需要）
           make -j$(nproc) O=out dtbs || echo "警告：dtbs 目标不存在，跳过设备树编译"
-
           [ -f "out/arch/${ARCH}/boot/Image.gz-dtb" ] || exit 1
           ccache -s
 
@@ -171,11 +142,10 @@ jobs:
           mkdir -p "${ARTIFACT_NAME}"
           cp "out/arch/${ARCH}/boot/Image.gz-dtb" "${ARTIFACT_NAME}/"
 
-          # 尝试复制 dtbo.img，如果不存在则跳过（可能不需要或尚未生成）
           if [ -f "out/arch/${ARCH}/boot/dtbo.img" ]; then
             cp "out/arch/${ARCH}/boot/dtbo.img" "${ARTIFACT_NAME}/"
           else
-            echo "警告：dtbo.img 未生成，跳过复制。如果您的设备需要 dtbo.img，请检查内核构建系统。"
+            echo "警告：dtbo.img 未生成，跳过复制"
           fi
 
           mkdir -p "${ARTIFACT_NAME}/modules"
